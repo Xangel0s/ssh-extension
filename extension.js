@@ -11,7 +11,7 @@ let activeWebview = null;
 
 function debugLog(msg) {
     try {
-        const logPath = 'c:\\Users\\User\\Documents\\sysadmin-extension\\extension-debug.log';
+        const logPath = path.join(__dirname, 'extension-debug.log');
         const time = new Date().toISOString();
         fs.appendFileSync(logPath, `[${time}] ${msg}\n`);
     } catch (e) {
@@ -91,6 +91,69 @@ class MCPSidebarProvider {
                 case 'getStatus':
                     this.updateStatus(serverProcess ? 'Running' : 'Stopped');
                     break;
+                case 'getSettings': {
+                    const config = vscode.workspace.getConfiguration('mcpSreManager');
+                    webviewView.webview.postMessage({
+                        type: 'settings',
+                        config: {
+                            sshHost: config.get('sshHost') || '',
+                            sshPort: config.get('sshPort') || 22,
+                            sshUser: config.get('sshUser') || 'root',
+                            proxmoxUrl: config.get('proxmoxUrl') || '',
+                            proxmoxTokenId: config.get('proxmoxTokenId') || '',
+                            proxmoxSkipTlsVerify: config.get('proxmoxSkipTlsVerify') !== false,
+                            coolifyUrl: config.get('coolifyUrl') || '',
+                            coolifySkipTlsVerify: config.get('coolifySkipTlsVerify') !== false,
+                            monitoringInterval: config.get('monitoringInterval') || '30s',
+                            monitoringCpuThreshold: config.get('monitoringCpuThreshold') || 90,
+                            monitoringMemThreshold: config.get('monitoringMemThreshold') || 90
+                        },
+                        secrets: {
+                            sshPass: await this._context.secrets.get('sshPass') || '',
+                            proxmoxTokenValue: await this._context.secrets.get('proxmoxTokenValue') || '',
+                            coolifyToken: await this._context.secrets.get('coolifyToken') || ''
+                        }
+                    });
+                    break;
+                }
+                case 'saveSettings': {
+                    const config = vscode.workspace.getConfiguration('mcpSreManager');
+                    await config.update('sshHost', data.config.sshHost, vscode.ConfigurationTarget.Global);
+                    await config.update('sshPort', data.config.sshPort, vscode.ConfigurationTarget.Global);
+                    await config.update('sshUser', data.config.sshUser, vscode.ConfigurationTarget.Global);
+                    await config.update('proxmoxUrl', data.config.proxmoxUrl, vscode.ConfigurationTarget.Global);
+                    await config.update('proxmoxTokenId', data.config.proxmoxTokenId, vscode.ConfigurationTarget.Global);
+                    await config.update('proxmoxSkipTlsVerify', data.config.proxmoxSkipTlsVerify, vscode.ConfigurationTarget.Global);
+                    await config.update('coolifyUrl', data.config.coolifyUrl, vscode.ConfigurationTarget.Global);
+                    await config.update('coolifySkipTlsVerify', data.config.coolifySkipTlsVerify, vscode.ConfigurationTarget.Global);
+                    await config.update('monitoringInterval', data.config.monitoringInterval, vscode.ConfigurationTarget.Global);
+                    await config.update('monitoringCpuThreshold', data.config.monitoringCpuThreshold, vscode.ConfigurationTarget.Global);
+                    await config.update('monitoringMemThreshold', data.config.monitoringMemThreshold, vscode.ConfigurationTarget.Global);
+                    
+                    if (data.secrets.sshPass) {
+                        await this._context.secrets.store('sshPass', data.secrets.sshPass);
+                    } else {
+                        await this._context.secrets.delete('sshPass');
+                    }
+                    if (data.secrets.proxmoxTokenValue) {
+                        await this._context.secrets.store('proxmoxTokenValue', data.secrets.proxmoxTokenValue);
+                    } else {
+                        await this._context.secrets.delete('proxmoxTokenValue');
+                    }
+                    if (data.secrets.coolifyToken) {
+                        await this._context.secrets.store('coolifyToken', data.secrets.coolifyToken);
+                    } else {
+                        await this._context.secrets.delete('coolifyToken');
+                    }
+                    vscode.window.showInformationMessage("Ajustes guardados correctamente.");
+                    // Refresh settings in UI
+                    webviewView.webview.postMessage({
+                        type: 'settings',
+                        config: data.config,
+                        secrets: data.secrets
+                    });
+                    break;
+                }
                 case 'showMessage':
                     if (data.severity === 'warning') {
                         vscode.window.showWarningMessage(data.message);
@@ -114,7 +177,7 @@ class MCPSidebarProvider {
         }
     }
 
-    startServer() {
+    async startServer() {
         if (serverProcess) {
             vscode.window.showInformationMessage("MCP Server is already running.");
             return;
@@ -207,9 +270,26 @@ class MCPSidebarProvider {
             this.logToFile(logPath, `Starting using 'go run ./cmd/server/main.go' in ${cwd}`);
         }
 
+        const config = vscode.workspace.getConfiguration('mcpSreManager');
+        const sshPass = await this._context.secrets.get('sshPass') || '';
+        const proxmoxTokenValue = await this._context.secrets.get('proxmoxTokenValue') || '';
+        const coolifyToken = await this._context.secrets.get('coolifyToken') || '';
+
         const spawnOptions = {
             cwd: cwd,
-            env: { ...process.env }
+            env: {
+                ...process.env,
+                PROXMOX_URL: config.get('proxmoxUrl') || '',
+                PROXMOX_TOKEN_ID: config.get('proxmoxTokenId') || '',
+                PROXMOX_TOKEN_VALUE: proxmoxTokenValue,
+                PROXMOX_SKIP_TLS_VERIFY: String(config.get('proxmoxSkipTlsVerify') !== false),
+                COOLIFY_URL: config.get('coolifyUrl') || '',
+                COOLIFY_TOKEN: coolifyToken,
+                COOLIFY_SKIP_TLS_VERIFY: String(config.get('coolifySkipTlsVerify') !== false),
+                MONITORING_INTERVAL: config.get('monitoringInterval') || '30s',
+                MONITORING_CPU_THRESHOLD: String(config.get('monitoringCpuThreshold') || 90),
+                MONITORING_MEM_THRESHOLD: String(config.get('monitoringMemThreshold') || 90)
+            }
         };
 
         try {
@@ -289,8 +369,35 @@ class MCPSidebarProvider {
         }
     }
 
-    handleServerMessage(message) {
-        if (message.id !== undefined) {
+    async handleServerMessage(message) {
+        if (message.method !== undefined && message.id !== undefined) {
+            // Incoming request from Go server (Interactive command approval)
+            if (message.method === 'custom/requestApproval') {
+                const command = message.params.command;
+                const reqId = message.params.id;
+                
+                const result = await vscode.window.showWarningMessage(
+                    `El servidor MCP solicita ejecutar el comando SSH de ESCRITURA:\n\n"${command}"\n\n¿Deseas autorizar esta acción?`,
+                    { modal: true },
+                    "Autorizar",
+                    "Denegar"
+                );
+                
+                const approved = (result === "Autorizar");
+                const response = {
+                    jsonrpc: "2.0",
+                    method: "custom/approveResponse",
+                    params: {
+                        id: reqId,
+                        approved: approved
+                    }
+                };
+                if (serverProcess) {
+                    serverProcess.stdin.write(JSON.stringify(response) + '\n');
+                }
+                outputChannel.appendLine(`[Security]: Command approval response sent: id=${reqId}, approved=${approved}`);
+            }
+        } else if (message.id !== undefined) {
             const pending = pendingRequests.get(message.id);
             if (pending) {
                 pendingRequests.delete(message.id);
@@ -298,6 +405,19 @@ class MCPSidebarProvider {
                     pending.reject(message.error);
                 } else {
                     pending.resolve(message.result);
+                }
+            }
+        } else if (message.method !== undefined) {
+            // Notification from Go server (Alerts)
+            if (message.method === 'notifications/alert') {
+                const msg = message.params.message;
+                const level = message.params.level || 'info';
+                if (level === 'warning') {
+                    vscode.window.showWarningMessage(`[MCP Alert]: ${msg}`);
+                } else if (level === 'error') {
+                    vscode.window.showErrorMessage(`[MCP Alert]: ${msg}`);
+                } else {
+                    vscode.window.showInformationMessage(`[MCP Alert]: ${msg}`);
                 }
             }
         }
@@ -620,6 +740,7 @@ class MCPSidebarProvider {
         <button class="tab-btn active" onclick="switchTab('ssh')">SSH</button>
         <button class="tab-btn" onclick="switchTab('proxmox')">Proxmox</button>
         <button class="tab-btn" onclick="switchTab('coolify')">Coolify</button>
+        <button class="tab-btn" id="tab-btn-settings" onclick="switchTab('settings')">Ajustes</button>
     </div>
 
     <!-- TAB: SSH -->
@@ -668,6 +789,77 @@ class MCPSidebarProvider {
         </div>
     </div>
 
+    <!-- TAB: AJUSTES -->
+    <div id="tab-settings" class="tab-content">
+        <div class="card">
+            <h3 style="font-size: 0.95rem; margin-top: 0; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px;">SSH Remoto</h3>
+            <div class="form-group">
+                <label>Host por Defecto</label>
+                <input type="text" id="settings-ssh-host" placeholder="e.g. 192.168.1.50">
+            </div>
+            <div class="form-group">
+                <label>Puerto por Defecto</label>
+                <input type="number" id="settings-ssh-port" value="22">
+            </div>
+            <div class="form-group">
+                <label>Usuario por Defecto</label>
+                <input type="text" id="settings-ssh-user" value="root">
+            </div>
+            <div class="form-group">
+                <label>Clave SSH / Passphrase (Seguro)</label>
+                <input type="password" id="settings-ssh-pass" placeholder="Clave de paso (SecretStorage)">
+            </div>
+            
+            <h3 style="font-size: 0.95rem; margin-top: 15px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px;">Proxmox VE</h3>
+            <div class="form-group">
+                <label>URL API</label>
+                <input type="text" id="settings-px-url" placeholder="https://192.168.1.100:8006">
+            </div>
+            <div class="form-group">
+                <label>Token ID</label>
+                <input type="text" id="settings-px-token-id" placeholder="root@pam!token">
+            </div>
+            <div class="form-group">
+                <label>Token Value (Seguro)</label>
+                <input type="password" id="settings-px-token-val" placeholder="SecretStorage">
+            </div>
+            <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top: 6px;">
+                <input type="checkbox" id="settings-px-skip-tls" style="width:auto; margin:0;">
+                <label for="settings-px-skip-tls" style="margin:0; cursor:pointer;">Omitir Verificación TLS</label>
+            </div>
+
+            <h3 style="font-size: 0.95rem; margin-top: 15px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px;">Coolify</h3>
+            <div class="form-group">
+                <label>URL API</label>
+                <input type="text" id="settings-coolify-url" placeholder="http://192.168.1.150:8000">
+            </div>
+            <div class="form-group">
+                <label>API Token (Seguro)</label>
+                <input type="password" id="settings-coolify-token" placeholder="SecretStorage">
+            </div>
+            <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top: 6px;">
+                <input type="checkbox" id="settings-coolify-skip-tls" style="width:auto; margin:0;">
+                <label for="settings-coolify-skip-tls" style="margin:0; cursor:pointer;">Omitir Verificación TLS</label>
+            </div>
+
+            <h3 style="font-size: 0.95rem; margin-top: 15px; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.05); padding-bottom: 4px;">Monitoreo</h3>
+            <div class="form-group">
+                <label>Intervalo de Monitoreo</label>
+                <input type="text" id="settings-mon-interval" value="30s">
+            </div>
+            <div class="form-group">
+                <label>Umbral CPU (%)</label>
+                <input type="number" id="settings-mon-cpu" value="90">
+            </div>
+            <div class="form-group">
+                <label>Umbral Memoria (%)</label>
+                <input type="number" id="settings-mon-mem" value="90">
+            </div>
+
+            <button class="btn" style="margin-top: 15px;" onclick="saveSettings()">Guardar Ajustes</button>
+        </div>
+    </div>
+
     <!-- RESULT PANEL -->
     <div class="result-panel" id="resultPanel" style="display:none;">
         <div class="result-header">
@@ -698,8 +890,68 @@ class MCPSidebarProvider {
                 case 'toolResult':
                     showResult(message.tool, message.success, message.result);
                     break;
+                case 'settings':
+                    document.getElementById('settings-ssh-host').value = message.config.sshHost || '';
+                    document.getElementById('settings-ssh-port').value = message.config.sshPort || 22;
+                    document.getElementById('settings-ssh-user').value = message.config.sshUser || 'root';
+                    document.getElementById('settings-ssh-pass').value = message.secrets.sshPass || '';
+                    
+                    document.getElementById('settings-px-url').value = message.config.proxmoxUrl || '';
+                    document.getElementById('settings-px-token-id').value = message.config.proxmoxTokenId || '';
+                    document.getElementById('settings-px-token-val').value = message.secrets.proxmoxTokenValue || '';
+                    document.getElementById('settings-px-skip-tls').checked = message.config.proxmoxSkipTlsVerify;
+                    
+                    document.getElementById('settings-coolify-url').value = message.config.coolifyUrl || '';
+                    document.getElementById('settings-coolify-token').value = message.secrets.coolifyToken || '';
+                    document.getElementById('settings-coolify-skip-tls').checked = message.config.coolifySkipTlsVerify;
+                    
+                    document.getElementById('settings-mon-interval').value = message.config.monitoringInterval || '30s';
+                    document.getElementById('settings-mon-cpu').value = message.config.monitoringCpuThreshold || 90;
+                    document.getElementById('settings-mon-mem').value = message.config.monitoringMemThreshold || 90;
+                    
+                    // Populate SSH fields if empty
+                    if (!document.getElementById('ssh-host').value) {
+                        document.getElementById('ssh-host').value = message.config.sshHost || '';
+                    }
+                    if (!document.getElementById('ssh-user').value) {
+                        document.getElementById('ssh-user').value = message.config.sshUser || 'root';
+                    }
+                    if (!document.getElementById('ssh-port').value) {
+                        document.getElementById('ssh-port').value = message.config.sshPort || 22;
+                    }
+                    if (!document.getElementById('ssh-pass').value) {
+                        document.getElementById('ssh-pass').value = message.secrets.sshPass || '';
+                    }
+                    break;
             }
         });
+
+        // Request settings on webview load
+        vscode.postMessage({ type: 'getSettings' });
+
+        function saveSettings() {
+            vscode.postMessage({
+                type: 'saveSettings',
+                config: {
+                    sshHost: document.getElementById('settings-ssh-host').value,
+                    sshPort: parseInt(document.getElementById('settings-ssh-port').value) || 22,
+                    sshUser: document.getElementById('settings-ssh-user').value,
+                    proxmoxUrl: document.getElementById('settings-px-url').value,
+                    proxmoxTokenId: document.getElementById('settings-px-token-id').value,
+                    proxmoxSkipTlsVerify: document.getElementById('settings-px-skip-tls').checked,
+                    coolifyUrl: document.getElementById('settings-coolify-url').value,
+                    coolifySkipTlsVerify: document.getElementById('settings-coolify-skip-tls').checked,
+                    monitoringInterval: document.getElementById('settings-mon-interval').value,
+                    monitoringCpuThreshold: parseInt(document.getElementById('settings-mon-cpu').value) || 90,
+                    monitoringMemThreshold: parseInt(document.getElementById('settings-mon-mem').value) || 90
+                },
+                secrets: {
+                    sshPass: document.getElementById('settings-ssh-pass').value,
+                    proxmoxTokenValue: document.getElementById('settings-px-token-val').value,
+                    coolifyToken: document.getElementById('settings-coolify-token').value
+                }
+            });
+        }
 
         function updateStatusUI(status) {
             const container = document.getElementById('statusContainer');

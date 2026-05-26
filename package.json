@@ -40,13 +40,75 @@
         "command": "sysadmin-extension.stopServer",
         "title": "Stop MCP SRE Server"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "SysAdmin & MCP Manager Configuration",
+      "properties": {
+        "mcpSreManager.sshHost": {
+          "type": "string",
+          "default": "",
+          "description": "IP o Host SSH remoto por defecto."
+        },
+        "mcpSreManager.sshPort": {
+          "type": "integer",
+          "default": 22,
+          "description": "Puerto SSH por defecto."
+        },
+        "mcpSreManager.sshUser": {
+          "type": "string",
+          "default": "root",
+          "description": "Usuario SSH por defecto."
+        },
+        "mcpSreManager.proxmoxUrl": {
+          "type": "string",
+          "default": "",
+          "description": "URL de la API de Proxmox (ej: https://192.168.1.100:8006)."
+        },
+        "mcpSreManager.proxmoxTokenId": {
+          "type": "string",
+          "default": "",
+          "description": "Token ID de Proxmox (ej: root@pam!sre-token)."
+        },
+        "mcpSreManager.proxmoxSkipTlsVerify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ignorar la validación de certificados TLS de Proxmox."
+        },
+        "mcpSreManager.coolifyUrl": {
+          "type": "string",
+          "default": "",
+          "description": "URL de la API de Coolify (ej: http://192.168.1.150:8000)."
+        },
+        "mcpSreManager.coolifySkipTlsVerify": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ignorar la validación de certificados TLS de Coolify."
+        },
+        "mcpSreManager.monitoringInterval": {
+          "type": "string",
+          "default": "30s",
+          "description": "Intervalo de tiempo para el monitoreo en segundo plano (ej: 30s, 1m, 5m)."
+        },
+        "mcpSreManager.monitoringCpuThreshold": {
+          "type": "integer",
+          "default": 90,
+          "description": "Umbral de uso de CPU (%) de Proxmox para activar alertas."
+        },
+        "mcpSreManager.monitoringMemThreshold": {
+          "type": "integer",
+          "default": 90,
+          "description": "Umbral de uso de memoria (%) de Proxmox para activar alertas."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "echo 'No compilation needed for pure JS extension'"
+    "compile": "echo 'No compilation needed for pure JS extension'",
+    "package": "vsce package"
   },
   "devDependencies": {
-    "@types/vscode": "^1.74.0"
+    "@types/vscode": "^1.74.0",
+    "@vscode/vsce": "^2.19.0"
   }
 }
