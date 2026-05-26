@@ -74,6 +74,11 @@
           "default": true,
           "description": "Ignorar la validación de certificados TLS de Proxmox."
         },
+        "mcpSreManager.proxmoxNode": {
+          "type": "string",
+          "default": "pve",
+          "description": "Nombre del nodo Proxmox por defecto."
+        },
         "mcpSreManager.coolifyUrl": {
           "type": "string",
           "default": "",
