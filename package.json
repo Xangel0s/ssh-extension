@@ -49,6 +49,11 @@
           "default": "",
           "description": "IP o Host SSH remoto por defecto."
         },
+        "mcpSreManager.sshKeyPath": {
+          "type": "string",
+          "default": "",
+          "description": "Ruta local a la llave privada SSH (ej: ~/.ssh/id_rsa)."
+        },
         "mcpSreManager.sshPort": {
           "type": "integer",
           "default": 22,

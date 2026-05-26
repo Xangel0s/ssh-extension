@@ -93,6 +93,12 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                 case 'stop':
                     this.stopServer();
                     break;
+                case 'restart':
+                    this.stopServer();
+                    setTimeout(() => {
+                        this.startServer();
+                    }, 500);
+                    break;
                 case 'executeTool':
                     this.runTool(data.tool, data.args);
                     break;
@@ -105,6 +111,7 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                         type: 'settings',
                         config: {
                             sshHost: config.get('sshHost') || '',
+                            sshKeyPath: config.get('sshKeyPath') || '',
                             sshPort: config.get('sshPort') || 22,
                             sshUser: config.get('sshUser') || 'root',
                             proxmoxUrl: config.get('proxmoxUrl') || '',
@@ -153,6 +160,7 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                         oldCoolifyToken !== (data.secrets.coolifyToken || '');
 
                     await config.update('sshHost', data.config.sshHost, vscode.ConfigurationTarget.Global);
+                    await config.update('sshKeyPath', data.config.sshKeyPath, vscode.ConfigurationTarget.Global);
                     await config.update('sshPort', data.config.sshPort, vscode.ConfigurationTarget.Global);
                     await config.update('sshUser', data.config.sshUser, vscode.ConfigurationTarget.Global);
                     await config.update('proxmoxUrl', data.config.proxmoxUrl, vscode.ConfigurationTarget.Global);
@@ -384,6 +392,12 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                     outputChannel.append(str);
                 }
                 this.logToFile(logPath, `[Stderr]: ${str}`);
+                if (activeWebview) {
+                    activeWebview.webview.postMessage({
+                        type: 'mcpLog',
+                        value: str
+                    });
+                }
             });
 
             proc.on('error', (err: any) => {
@@ -530,7 +544,7 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                 activeWebview.webview.postMessage({
                     type: 'toolResult',
                     tool: toolName,
-                    success: false,
+                success: false,
                     result: err.message || JSON.stringify(err)
                 });
             }
@@ -569,157 +583,46 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             color: var(--vscode-sideBarTitle-foreground);
         }
 
-        .status-container {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 0.85rem;
-            padding: 8px 12px;
+        /* Wizard Cards */
+        .wizard-card {
             background-color: var(--vscode-editor-background);
-            border-radius: 6px;
-            border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
-        }
-
-        .status-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            display: inline-block;
-        }
-
-        .status-Running .status-dot {
-            background-color: #3fb950;
-            box-shadow: 0 0 6px #3fb950;
-        }
-
-        .status-Stopped .status-dot {
-            background-color: #f85149;
-            box-shadow: 0 0 6px #f85149;
-        }
-
-        .btn {
-            background-color: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            border: none;
-            padding: 6px 12px;
-            cursor: pointer;
-            border-radius: 4px;
-            font-weight: 500;
-            font-size: 0.85rem;
-            width: 100%;
-            box-sizing: border-box;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 6px;
-            transition: background-color 0.2s;
-        }
-
-        .btn:hover {
-            background-color: var(--vscode-button-hoverBackground);
-        }
-
-        .btn-secondary {
-            background-color: var(--vscode-button-secondaryBackground, #30363d);
-            color: var(--vscode-button-secondaryForeground, #c9d1d9);
-        }
-
-        .btn-secondary:hover {
-            background-color: var(--vscode-button-secondaryHoverBackground, #383f47);
-        }
-
-        .accordion {
+            border: 1px solid var(--vscode-panel-border, #30363d);
+            border-radius: 8px;
+            padding: 16px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
             display: flex;
             flex-direction: column;
-            gap: 8px;
+            gap: 12px;
         }
 
-        .accordion-item {
-            background-color: var(--vscode-editor-background);
-            border: 1px solid var(--vscode-panel-border);
-            border-radius: 6px;
-            overflow: hidden;
-            transition: border-color 0.2s, box-shadow 0.2s;
+        .wizard-header {
+            border-bottom: 1px solid var(--vscode-panel-border, #30363d);
+            padding-bottom: 8px;
+            margin-bottom: 4px;
         }
 
-        .accordion-item.active {
-            border-color: var(--vscode-focusBorder);
-            box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+        .wizard-step-indicator {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: var(--vscode-textPreformat-foreground, #58a6ff);
+            letter-spacing: 0.5px;
+            display: block;
+            margin-bottom: 4px;
         }
 
-        .accordion-header {
-            background-color: var(--vscode-sideBar-background);
-            padding: 10px 12px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            user-select: none;
-            transition: background-color 0.2s;
-            border-left: 3px solid transparent;
-        }
-
-        .accordion-item.active .accordion-header {
-            border-left-color: var(--vscode-focusBorder);
-            background-color: var(--vscode-editor-background);
-        }
-
-        .accordion-header:hover {
-            background-color: var(--vscode-list-hoverBackground);
-        }
-
-        .step-title {
-            font-size: 0.85rem;
+        .wizard-title {
+            font-size: 0.95rem;
             font-weight: 600;
+            margin: 0 0 4px 0;
             color: var(--vscode-foreground);
         }
 
-        .header-right {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .badge {
-            font-size: 0.68rem;
-            padding: 2px 6px;
-            border-radius: 12px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.2px;
-        }
-
-        .badge-configured {
-            background-color: rgba(63, 185, 80, 0.12);
-            color: #3fb950;
-            border: 1px solid rgba(63, 185, 80, 0.25);
-        }
-
-        .badge-pending {
-            background-color: rgba(210, 153, 34, 0.1);
-            color: #d29922;
-            border: 1px solid rgba(210, 153, 34, 0.2);
-        }
-
-        .arrow {
-            font-size: 0.7rem;
-            transition: transform 0.2s ease-in-out;
+        .wizard-desc {
+            font-size: 0.75rem;
             color: var(--vscode-descriptionForeground);
-            display: inline-block;
-        }
-
-        .accordion-item.active .arrow {
-            transform: rotate(180deg);
-        }
-
-        .accordion-content {
-            padding: 12px;
-            border-top: 1px solid var(--vscode-panel-border);
-            display: none;
-        }
-
-        .accordion-item.active .accordion-content {
-            display: block;
+            margin: 0;
+            line-height: 1.3;
         }
 
         .form-group {
@@ -755,58 +658,167 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             border-color: var(--vscode-focusBorder);
         }
 
-        .chips-container {
+        .btn {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 6px 12px;
+            cursor: pointer;
+            border-radius: 4px;
+            font-weight: 500;
+            font-size: 0.85rem;
+            width: 100%;
+            box-sizing: border-box;
             display: flex;
-            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
             gap: 6px;
-            margin-top: 6px;
+            transition: background-color 0.2s;
         }
 
-        .chip {
-            font-size: 0.7rem;
-            padding: 3px 8px;
+        .btn:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+
+        .btn-secondary {
             background-color: var(--vscode-button-secondaryBackground, #30363d);
             color: var(--vscode-button-secondaryForeground, #c9d1d9);
-            border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
-            border-radius: 12px;
-            cursor: pointer;
-            transition: all 0.2s;
         }
 
-        .chip:hover {
+        .btn-secondary:hover {
             background-color: var(--vscode-button-secondaryHoverBackground, #383f47);
-            border-color: var(--vscode-focusBorder);
         }
 
-        .result-panel {
-            border-top: 1px solid var(--vscode-panel-border);
-            padding-top: 12px;
+        /* Dashboard Styles */
+        .dashboard-header {
             display: flex;
-            flex-direction: column;
-            gap: 8px;
-        }
-
-        .result-header {
-            font-size: 0.8rem;
-            font-weight: 600;
-            display: flex;
-            justify-content: space-between;
             align-items: center;
+            justify-content: space-between;
+            margin-bottom: 4px;
+        }
+
+        .dashboard-title {
+            font-size: 0.95rem;
+            font-weight: 600;
             color: var(--vscode-foreground);
         }
 
-        pre {
-            background-color: var(--vscode-textCodeBlock-background, #161b22);
-            color: #e6edf3;
-            padding: 10px;
+        .settings-btn {
+            background: none;
+            border: none;
+            color: var(--vscode-descriptionForeground);
+            cursor: pointer;
+            font-size: 1.1rem;
+            padding: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 4px;
+            transition: background-color 0.2s, color 0.2s;
+        }
+
+        .settings-btn:hover {
+            background-color: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.08));
+            color: var(--vscode-foreground);
+        }
+
+        .status-container {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.85rem;
+            padding: 8px 12px;
+            background-color: var(--vscode-editor-background);
             border-radius: 6px;
+            border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+
+        .status-Running .status-dot {
+            background-color: #3fb950;
+            box-shadow: 0 0 6px #3fb950;
+        }
+
+        .status-Stopped .status-dot {
+            background-color: #f85149;
+            box-shadow: 0 0 6px #f85149;
+        }
+
+        .controls-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .terminal-container {
+            display: flex;
+            flex-direction: column;
+            background-color: #0d1117;
+            border: 1px solid var(--vscode-panel-border, #30363d);
+            border-radius: 6px;
+            overflow: hidden;
+            font-family: var(--vscode-editor-font-family, Consolas, "Courier New", monospace);
+            min-height: 250px;
+            max-height: 380px;
+        }
+
+        .terminal-header {
+            background-color: #161b22;
+            padding: 6px 10px;
+            font-size: 0.72rem;
+            color: var(--vscode-descriptionForeground, #8b949e);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--vscode-panel-border, #30363d);
+            font-weight: 500;
+        }
+
+        .terminal-clear-btn {
+            background: none;
+            border: none;
+            color: var(--vscode-button-secondaryForeground, #c9d1d9);
+            cursor: pointer;
+            font-size: 0.7rem;
+            padding: 2px 6px;
+            border-radius: 3px;
+            transition: background-color 0.2s;
+        }
+
+        .terminal-clear-btn:hover {
+            background-color: rgba(255,255,255,0.05);
+        }
+
+        .terminal-body {
+            padding: 10px;
+            overflow-y: auto;
+            flex-grow: 1;
             font-size: 0.75rem;
-            overflow-x: auto;
-            max-height: 200px;
+            line-height: 1.4;
+            color: #c9d1d9;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .terminal-line {
             margin: 0;
             white-space: pre-wrap;
             word-break: break-all;
-            border: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .terminal-line.stderr {
+            color: #ff6b6b;
+        }
+
+        .terminal-line.system-msg {
+            color: #58a6ff;
+            opacity: 0.8;
         }
 
         .loader-spinner {
@@ -824,62 +836,6 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
-
-        .app-item {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 8px;
-            border-radius: 4px;
-            background-color: rgba(255, 255, 255, 0.02);
-            margin-bottom: 6px;
-            font-size: 0.8rem;
-            border: 1px solid rgba(255, 255, 255, 0.04);
-        }
-
-        .app-item:last-child {
-            margin-bottom: 0;
-        }
-
-        .app-info {
-            display: flex;
-            flex-direction: column;
-            gap: 2px;
-            max-width: 65%;
-        }
-
-        .app-name {
-            font-weight: 600;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            color: var(--vscode-foreground);
-        }
-
-        .app-status {
-            font-size: 0.7rem;
-            opacity: 0.7;
-            color: var(--vscode-descriptionForeground);
-        }
-
-        .app-actions {
-            display: flex;
-            gap: 4px;
-        }
-
-        .app-btn {
-            padding: 3px 6px;
-            font-size: 0.7rem;
-            background-color: var(--vscode-button-background);
-            color: var(--vscode-button-foreground);
-            border: none;
-            border-radius: 3px;
-            cursor: pointer;
-            transition: background-color 0.2s;
-        }
-        .app-btn:hover {
-            background-color: var(--vscode-button-hoverBackground);
-        }
     </style>
 </head>
 <body>
@@ -887,154 +843,125 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
         <span>MCP SRE Manager</span>
     </h2>
 
-    <div class="status-container status-Stopped" id="statusContainer">
-        <span class="status-dot"></span>
-        <span id="statusText">Stopped</span>
-    </div>
-
-    <div style="display:flex; gap:8px; margin-bottom: 4px;">
-        <button class="btn" id="startBtn">Iniciar Servidor Go</button>
-        <button class="btn btn-secondary" id="stopBtn" style="display:none;">Detener Servidor</button>
-    </div>
-
-    <div class="accordion">
-        <div class="accordion-item active" id="step-ssh">
-            <div class="accordion-header" onclick="toggleAccordion('ssh')">
-                <span class="step-title">1. SSH Remoto</span>
-                <div class="header-right">
-                    <span class="badge badge-pending" id="badge-ssh">Pendiente</span>
-                    <span class="arrow" id="arrow-ssh">▼</span>
-                </div>
-            </div>
-            <div class="accordion-content" id="content-ssh">
-                <div class="form-group">
-                    <label>Servidor (IP / Host) *</label>
-                    <input type="text" id="ssh-host" placeholder="e.g. 192.168.1.50">
-                </div>
-                <div class="form-group">
-                    <label>Puerto *</label>
-                    <input type="number" id="ssh-port" value="22">
-                </div>
-                <div class="form-group">
-                    <label>Usuario *</label>
-                    <input type="text" id="ssh-user" value="root">
-                </div>
-                <div class="form-group">
-                    <label>Password / Key Passphrase (Opcional)</label>
-                    <input type="password" id="ssh-pass" placeholder="Dejar en blanco para usar clave pública">
-                </div>
-                <div class="form-group">
-                    <label>Comando de Diagnóstico *</label>
-                    <input type="text" id="ssh-command" placeholder="e.g. df -h">
-                    <div id="ssh-command-error" style="display:none; color:#f85149; font-size:0.72rem; margin-top:4px; font-weight: 500;"></div>
-                </div>
-                <div class="chips-container">
-                    <span class="chip" onclick="setSSHCommand('df -h')">df -h</span>
-                    <span class="chip" onclick="setSSHCommand('free -m')">free -m</span>
-                    <span class="chip" onclick="setSSHCommand('docker ps')">docker ps</span>
-                    <span class="chip" onclick="setSSHCommand('systemctl status docker')">docker status</span>
-                    <span class="chip" onclick="setSSHCommand('journalctl -n 50')">journalctl</span>
-                </div>
-                <button class="btn" style="margin-top: 12px;" onclick="runSSH()">Ejecutar Diagnóstico</button>
-            </div>
+    <!-- STEP 1: SSH CONFIGURATION -->
+    <div id="step-1" class="wizard-card" style="display:none;">
+        <div class="wizard-header">
+            <span class="wizard-step-indicator">Paso 1 de 3</span>
+            <h3 class="wizard-title">Configuración SSH</h3>
+            <p class="wizard-desc">Conexión base para diagnósticos remotos y ejecución segura de comandos.</p>
         </div>
-
-        <div class="accordion-item" id="step-proxmox">
-            <div class="accordion-header" onclick="toggleAccordion('proxmox')">
-                <span class="step-title">2. Proxmox VE</span>
-                <div class="header-right">
-                    <span class="badge badge-pending" id="badge-proxmox">Pendiente</span>
-                    <span class="arrow" id="arrow-proxmox">▼</span>
-                </div>
-            </div>
-            <div class="accordion-content" id="content-proxmox">
-                <div class="form-group">
-                    <label>URL API (ej: https://192.168.1.100:8006) *</label>
-                    <input type="text" id="px-url" placeholder="https://192.168.1.100:8006">
-                </div>
-                <div class="form-group">
-                    <label>Token ID *</label>
-                    <input type="text" id="px-token-id" placeholder="root@pam!sre-token">
-                </div>
-                <div class="form-group">
-                    <label>Token Value *</label>
-                    <input type="password" id="px-token-val" placeholder="SecretStorage">
-                </div>
-                <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top: 4px; margin-bottom: 8px;">
-                    <input type="checkbox" id="px-skip-tls" style="width:auto; margin:0;">
-                    <label for="px-skip-tls" style="margin:0; cursor:pointer;">Omitir Verificación TLS</label>
-                </div>
-                <div class="form-group">
-                    <label>Nombre del Nodo *</label>
-                    <input type="text" id="px-node" value="pve">
-                </div>
-                <button class="btn" onclick="runProxmox()">Obtener Estado del Nodo</button>
-            </div>
+        <div class="form-group">
+            <label>IP del Servidor / Host *</label>
+            <input type="text" id="ssh-host" placeholder="e.g. 192.168.1.50">
         </div>
-
-        <div class="accordion-item" id="step-coolify">
-            <div class="accordion-header" onclick="toggleAccordion('coolify')">
-                <span class="step-title">3. Coolify</span>
-                <div class="header-right">
-                    <span class="badge badge-pending" id="badge-coolify">Pendiente</span>
-                    <span class="arrow" id="arrow-coolify">▼</span>
-                </div>
-            </div>
-            <div class="accordion-content" id="content-coolify">
-                <div class="form-group">
-                    <label>URL API (ej: http://192.168.1.150:8000) *</label>
-                    <input type="text" id="coolify-url" placeholder="http://192.168.1.150:8000">
-                </div>
-                <div class="form-group">
-                    <label>API Token *</label>
-                    <input type="password" id="coolify-token" placeholder="SecretStorage">
-                </div>
-                <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top: 4px; margin-bottom: 8px;">
-                    <input type="checkbox" id="coolify-skip-tls" style="width:auto; margin:0;">
-                    <label for="coolify-skip-tls" style="margin:0; cursor:pointer;">Omitir Verificación TLS</label>
-                </div>
-                <button class="btn" onclick="listCoolifyApps()">Listar Aplicaciones</button>
-                <div style="margin-top: 10px;" id="coolify-apps-list"></div>
-            </div>
+        <div class="form-group">
+            <label>Usuario *</label>
+            <input type="text" id="ssh-user" value="root">
         </div>
-
-        <div class="accordion-item" id="step-monitoring">
-            <div class="accordion-header" onclick="toggleAccordion('monitoring')">
-                <span class="step-title">4. Ajustes de Monitoreo</span>
-                <div class="header-right">
-                    <span class="badge badge-pending" id="badge-monitoring">Pendiente</span>
-                    <span class="arrow" id="arrow-monitoring">▼</span>
-                </div>
-            </div>
-            <div class="accordion-content" id="content-monitoring">
-                <div class="form-group">
-                    <label>Intervalo de Monitoreo *</label>
-                    <input type="text" id="mon-interval" value="30s">
-                </div>
-                <div class="form-group">
-                    <label>Umbral CPU (%) *</label>
-                    <input type="number" id="mon-cpu" value="90">
-                </div>
-                <div class="form-group">
-                    <label>Umbral Memoria (%) *</label>
-                    <input type="number" id="mon-mem" value="90">
-                </div>
-                <button class="btn" style="margin-top: 12px;" onclick="saveSettingsButton()">Guardar Ajustes</button>
-            </div>
+        <div class="form-group">
+            <label>Puerto *</label>
+            <input type="number" id="ssh-port" value="22">
+        </div>
+        <div class="form-group">
+            <label>Ruta a la Llave Privada SSH *</label>
+            <input type="text" id="ssh-key-path" placeholder="e.g. C:\\Users\\User\\.ssh\\id_rsa">
+        </div>
+        <div style="margin-top: 10px;">
+            <button class="btn" onclick="saveStep1()">Guardar y Continuar</button>
         </div>
     </div>
 
-    <div class="result-panel" id="resultPanel" style="display:none;">
-        <div class="result-header">
-            <span>Resultado:</span>
-            <button class="btn btn-secondary" style="width:auto; padding: 2px 6px; margin:0;" onclick="clearResult()">Limpiar</button>
+    <!-- STEP 2: PROXMOX VE CONFIGURATION -->
+    <div id="step-2" class="wizard-card" style="display:none;">
+        <div class="wizard-header">
+            <span class="wizard-step-indicator">Paso 2 de 3</span>
+            <h3 class="wizard-title">Configuración Proxmox VE</h3>
+            <p class="wizard-desc">Monitoreo de recursos e hipervisores en tu homelab.</p>
         </div>
-        <pre id="resultOutput"></pre>
+        <div class="form-group">
+            <label>URL de la API (ej: https://192.168.1.100:8006)</label>
+            <input type="text" id="px-url" placeholder="https://192.168.1.100:8006">
+        </div>
+        <div class="form-group">
+            <label>Token ID</label>
+            <input type="text" id="px-token-id" placeholder="root@pam!token-name">
+        </div>
+        <div class="form-group">
+            <label>Secret (Token Value)</label>
+            <input type="password" id="px-token-val" placeholder="Secret Token Value">
+        </div>
+        <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top: 6px; margin-bottom: 8px;">
+            <input type="checkbox" id="px-skip-tls" style="width:auto; margin:0;" checked>
+            <label for="px-skip-tls" style="margin:0; cursor:pointer;">Omitir Verificación TLS</label>
+        </div>
+        <div class="form-group">
+            <label>Nombre del Nodo</label>
+            <input type="text" id="px-node" value="pve">
+        </div>
+        <div style="margin-top: 10px; display:flex; gap:8px;">
+            <button class="btn" onclick="saveStep2()">Guardar y Continuar</button>
+            <button class="btn btn-secondary" onclick="skipStep2()">Omitir por ahora</button>
+        </div>
+    </div>
+
+    <!-- STEP 3: COOLIFY CONFIGURATION -->
+    <div id="step-3" class="wizard-card" style="display:none;">
+        <div class="wizard-header">
+            <span class="wizard-step-indicator">Paso 3 de 3</span>
+            <h3 class="wizard-title">Configuración Coolify</h3>
+            <p class="wizard-desc">Monitoreo y lectura de logs de aplicaciones y contenedores.</p>
+        </div>
+        <div class="form-group">
+            <label>URL de la API (ej: http://192.168.1.150:8000)</label>
+            <input type="text" id="coolify-url" placeholder="http://192.168.1.150:8000">
+        </div>
+        <div class="form-group">
+            <label>Bearer Token</label>
+            <input type="password" id="coolify-token" placeholder="Coolify API Token">
+        </div>
+        <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top: 6px; margin-bottom: 8px;">
+            <input type="checkbox" id="coolify-skip-tls" style="width:auto; margin:0;" checked>
+            <label for="coolify-skip-tls" style="margin:0; cursor:pointer;">Omitir Verificación TLS</label>
+        </div>
+        <div style="margin-top: 10px; display:flex; gap:8px;">
+            <button class="btn" onclick="saveStep3()">Guardar y Finalizar</button>
+            <button class="btn btn-secondary" onclick="skipStep3()">Omitir por ahora</button>
+        </div>
+    </div>
+
+    <!-- STEP 4: DASHBOARD -->
+    <div id="step-dashboard" class="wizard-card" style="display:none; padding: 12px; gap: 10px;">
+        <div class="dashboard-header">
+            <span class="dashboard-title">Dashboard Principal</span>
+            <button class="settings-btn" onclick="showStep(1)" title="Volver a Configuración">⚙</button>
+        </div>
+
+        <div class="status-container status-Stopped" id="statusContainer">
+            <span class="status-dot"></span>
+            <span id="statusText">Stopped</span>
+        </div>
+
+        <div class="controls-row">
+            <button class="btn" id="startBtn">Iniciar</button>
+            <button class="btn btn-secondary" id="stopBtn" style="display:none;">Detener</button>
+            <button class="btn btn-secondary" id="restartBtn">Reiniciar</button>
+        </div>
+
+        <div class="terminal-container">
+            <div class="terminal-header">
+                <span>Terminal de Logs MCP</span>
+                <button class="terminal-clear-btn" onclick="clearTerminal()">Limpiar</button>
+            </div>
+            <div class="terminal-body" id="terminalBody">
+                <div class="terminal-line system-msg">Consola de logs inicializada. Servidor listo.</div>
+            </div>
+        </div>
     </div>
 
     <script>
         const vscode = acquireVsCodeApi();
         let serverRunning = false;
+        let onboardingCompleted = false;
 
         document.getElementById('startBtn').addEventListener('click', function() {
             vscode.postMessage({ type: 'start' });
@@ -1044,74 +971,97 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             vscode.postMessage({ type: 'stop' });
         });
 
+        document.getElementById('restartBtn').addEventListener('click', function() {
+            vscode.postMessage({ type: 'restart' });
+            appendLog('Reiniciando servidor MCP...', false, true);
+        });
+
         window.addEventListener('message', function(event) {
             const message = event.data;
             switch (message.type) {
                 case 'status':
                     updateStatusUI(message.value);
                     break;
-                case 'toolResult':
-                    showResult(message.tool, message.success, message.result);
-                    break;
                 case 'settings':
                     document.getElementById('ssh-host').value = message.config.sshHost || '';
+                    document.getElementById('ssh-key-path').value = message.config.sshKeyPath || '';
                     document.getElementById('ssh-port').value = message.config.sshPort || 22;
                     document.getElementById('ssh-user').value = message.config.sshUser || 'root';
-                    document.getElementById('ssh-pass').value = message.secrets.sshPass || '';
                     
                     document.getElementById('px-url').value = message.config.proxmoxUrl || '';
                     document.getElementById('px-token-id').value = message.config.proxmoxTokenId || '';
                     document.getElementById('px-token-val').value = message.secrets.proxmoxTokenValue || '';
-                    document.getElementById('px-skip-tls').checked = message.config.proxmoxSkipTlsVerify;
                     document.getElementById('px-node').value = message.config.proxmoxNode || 'pve';
                     
                     document.getElementById('coolify-url').value = message.config.coolifyUrl || '';
                     document.getElementById('coolify-token').value = message.secrets.coolifyToken || '';
-                    document.getElementById('coolify-skip-tls').checked = message.config.coolifySkipTlsVerify;
                     
-                    document.getElementById('mon-interval').value = message.config.monitoringInterval || '30s';
-                    document.getElementById('mon-cpu').value = message.config.monitoringCpuThreshold || 90;
-                    document.getElementById('mon-mem').value = message.config.monitoringMemThreshold || 90;
-                    
-                    updateBadges();
+                    // Auto-skip onboarding if SSH config already exists
+                    if (message.config.sshHost && message.config.sshUser) {
+                        onboardingCompleted = true;
+                        showStep('dashboard');
+                    } else {
+                        showStep(1);
+                    }
                     break;
+                case 'mcpLog': {
+                    const rawText = message.value;
+                    const lines = rawText.split('\\n');
+                    lines.forEach(function(line) {
+                        const trimmed = line.trim();
+                        if (!trimmed) return;
+                        try {
+                            const logObj = JSON.parse(trimmed);
+                            const timeStr = logObj.time ? logObj.time.substring(11, 19) : '';
+                            const level = logObj.level || 'INFO';
+                            const msg = logObj.msg || '';
+                            let formatted = (timeStr ? '[' + timeStr + '] ' : '') + '[' + level + '] ' + msg;
+                            
+                            Object.keys(logObj).forEach(function(key) {
+                                if (key !== 'time' && key !== 'level' && key !== 'msg') {
+                                    formatted += ' ' + key + '=' + JSON.stringify(logObj[key]);
+                                }
+                            });
+                            appendLog(formatted, level === 'ERROR' || level === 'WARN');
+                        } catch (e) {
+                            appendLog(trimmed, false);
+                        }
+                    });
+                    break;
+                }
             }
         });
 
-        const inputIds = [
-            'ssh-host', 'ssh-port', 'ssh-user',
-            'px-url', 'px-token-id', 'px-token-val', 'px-node',
-            'coolify-url', 'coolify-token',
-            'mon-interval', 'mon-cpu', 'mon-mem'
-        ];
-        inputIds.forEach(function(id) {
-            const el = document.getElementById(id);
-            if (el) {
-                el.addEventListener('input', updateBadges);
-            }
-        });
-
+        // Request settings on webview load
         vscode.postMessage({ type: 'getSettings' });
+
+        function showStep(step) {
+            document.getElementById('step-1').style.display = (step === 1) ? 'block' : 'none';
+            document.getElementById('step-2').style.display = (step === 2) ? 'block' : 'none';
+            document.getElementById('step-3').style.display = (step === 3) ? 'block' : 'none';
+            document.getElementById('step-dashboard').style.display = (step === 'dashboard') ? 'block' : 'none';
+        }
 
         function saveSettings(quiet) {
             vscode.postMessage({
                 type: 'saveSettings',
                 config: {
                     sshHost: document.getElementById('ssh-host').value,
+                    sshKeyPath: document.getElementById('ssh-key-path').value,
                     sshPort: parseInt(document.getElementById('ssh-port').value) || 22,
                     sshUser: document.getElementById('ssh-user').value,
                     proxmoxUrl: document.getElementById('px-url').value,
                     proxmoxTokenId: document.getElementById('px-token-id').value,
                     proxmoxSkipTlsVerify: document.getElementById('px-skip-tls').checked,
-                    proxmoxNode: document.getElementById('px-node').value,
+                    proxmoxNode: document.getElementById('px-node').value || 'pve',
                     coolifyUrl: document.getElementById('coolify-url').value,
                     coolifySkipTlsVerify: document.getElementById('coolify-skip-tls').checked,
-                    monitoringInterval: document.getElementById('mon-interval').value,
-                    monitoringCpuThreshold: parseInt(document.getElementById('mon-cpu').value) || 90,
-                    monitoringMemThreshold: parseInt(document.getElementById('mon-mem').value) || 90
+                    monitoringInterval: '30s',
+                    monitoringCpuThreshold: 90,
+                    monitoringMemThreshold: 90
                 },
                 secrets: {
-                    sshPass: document.getElementById('ssh-pass').value,
+                    sshPass: '', // SSH Key route used instead of password
                     proxmoxTokenValue: document.getElementById('px-token-val').value,
                     coolifyToken: document.getElementById('coolify-token').value
                 },
@@ -1119,56 +1069,44 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             });
         }
 
-        function saveSettingsButton() {
-            saveSettings(false);
-        }
-
-        function updateBadges() {
-            const sshHost = document.getElementById('ssh-host').value.trim();
-            const sshPort = document.getElementById('ssh-port').value.trim();
-            const sshUser = document.getElementById('ssh-user').value.trim();
-            const isSSHConfigured = sshHost && sshPort && sshUser;
-            setBadge('ssh', isSSHConfigured);
-
-            const pxUrl = document.getElementById('px-url').value.trim();
-            const pxTokenId = document.getElementById('px-token-id').value.trim();
-            const pxTokenVal = document.getElementById('px-token-val').value.trim();
-            const pxNode = document.getElementById('px-node').value.trim();
-            const isProxmoxConfigured = pxUrl && pxTokenId && pxTokenVal && pxNode;
-            setBadge('proxmox', isProxmoxConfigured);
-
-            const coolifyUrl = document.getElementById('coolify-url').value.trim();
-            const coolifyToken = document.getElementById('coolify-token').value.trim();
-            const isCoolifyConfigured = coolifyUrl && coolifyToken;
-            setBadge('coolify', isCoolifyConfigured);
-
-            const monInterval = document.getElementById('mon-interval').value.trim();
-            const monCpu = document.getElementById('mon-cpu').value.trim();
-            const monMem = document.getElementById('mon-mem').value.trim();
-            const isMonConfigured = monInterval && monCpu && monMem;
-            setBadge('monitoring', isMonConfigured);
-        }
-
-        function setBadge(stepId, isConfigured) {
-            const badge = document.getElementById('badge-' + stepId);
-            if (isConfigured) {
-                badge.className = 'badge badge-configured';
-                badge.textContent = 'Configurado';
-            } else {
-                badge.className = 'badge badge-pending';
-                badge.textContent = 'Pendiente';
+        function saveStep1() {
+            const host = document.getElementById('ssh-host').value.trim();
+            const user = document.getElementById('ssh-user').value.trim();
+            const keyPath = document.getElementById('ssh-key-path').value.trim();
+            if (!host || !user || !keyPath) {
+                vscode.postMessage({
+                    type: 'showMessage',
+                    message: 'Por favor, rellene todos los campos obligatorios (*).',
+                    severity: 'warning'
+                });
+                return;
             }
+            saveSettings(true);
+            showStep(2);
         }
 
-        function toggleAccordion(stepId) {
-            const items = document.querySelectorAll('.accordion-item');
-            items.forEach(function(item) {
-                if (item.id === 'step-' + stepId) {
-                    item.classList.toggle('active');
-                } else {
-                    item.classList.remove('active');
-                }
-            });
+        function saveStep2() {
+            saveSettings(true);
+            showStep(3);
+        }
+
+        function skipStep2() {
+            showStep(3);
+        }
+
+        function saveStep3() {
+            saveSettings(true);
+            onboardingCompleted = true;
+            showStep('dashboard');
+            // Auto start the Go backend server at the end of onboarding
+            vscode.postMessage({ type: 'start' });
+        }
+
+        function skipStep3() {
+            onboardingCompleted = true;
+            showStep('dashboard');
+            // Auto start the Go backend server at the end of onboarding
+            vscode.postMessage({ type: 'start' });
         }
 
         function updateStatusUI(status) {
@@ -1191,161 +1129,27 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             }
         }
 
-        function showResult(tool, success, data) {
-            document.getElementById('resultPanel').style.display = 'block';
-            const output = document.getElementById('resultOutput');
-            let formatted = '';
-            if (data && data.content && data.content[0] && data.content[0].text) {
-                formatted = data.content[0].text;
-            } else {
-                formatted = JSON.stringify(data, null, 2);
+        function appendLog(text, isError, isSystem) {
+            const body = document.getElementById('terminalBody');
+            const line = document.createElement('div');
+            
+            let className = 'terminal-line';
+            if (isError) className += ' stderr';
+            if (isSystem) className += ' system-msg';
+            
+            line.className = className;
+            line.textContent = text;
+            body.appendChild(line);
+            
+            while (body.childNodes.length > 300) {
+                body.removeChild(body.firstChild);
             }
-            output.style.color = !success ? '#ff6b6b' : '#e6edf3';
-            output.textContent = formatted;
+            body.scrollTop = body.scrollHeight;
         }
 
-        function clearResult() {
-            document.getElementById('resultPanel').style.display = 'none';
-            document.getElementById('resultOutput').textContent = '';
-        }
-
-        function setSSHCommand(cmd) {
-            document.getElementById('ssh-command').value = cmd;
-            document.getElementById('ssh-command-error').style.display = 'none';
-            runSSH();
-        }
-
-        function runSSH() {
-            if (!serverRunning) {
-                vscode.postMessage({
-                    type: 'showMessage',
-                    message: 'El servidor MCP no está ejecutándose. Inícialo primero.',
-                    severity: 'warning'
-                });
-                return;
-            }
-            const cmd = document.getElementById('ssh-command').value.trim();
-            const errEl = document.getElementById('ssh-command-error');
-            if (!cmd) {
-                errEl.textContent = 'El comando de diagnóstico no puede estar vacío.';
-                errEl.style.display = 'block';
-                return;
-            } else {
-                errEl.style.display = 'none';
-            }
-            saveSettings(true);
-            showLoading();
-            vscode.postMessage({
-                type: 'executeTool',
-                tool: 'execute_ssh_diagnostic',
-                args: {
-                    host: document.getElementById('ssh-host').value,
-                    command: cmd,
-                    user: document.getElementById('ssh-user').value,
-                    port: parseInt(document.getElementById('ssh-port').value) || 22,
-                    password: document.getElementById('ssh-pass').value
-                }
-            });
-        }
-
-        function runProxmox() {
-            if (!serverRunning) {
-                vscode.postMessage({
-                    type: 'showMessage',
-                    message: 'El servidor MCP no está ejecutándose. Inícialo primero.',
-                    severity: 'warning'
-                });
-                return;
-            }
-            saveSettings(true);
-            showLoading();
-            vscode.postMessage({
-                type: 'executeTool',
-                tool: 'get_proxmox_node_status',
-                args: {
-                    node: document.getElementById('px-node').value
-                }
-            });
-        }
-
-        window.addEventListener('message', function(event) {
-            const message = event.data;
-            if (message.type === 'toolResult' && message.tool === 'list_coolify_applications' && message.success) {
-                renderAppsList(message.result);
-            }
-        });
-
-        function listCoolifyApps() {
-            if (!serverRunning) {
-                vscode.postMessage({
-                    type: 'showMessage',
-                    message: 'El servidor MCP no está ejecutándose. Inícialo primero.',
-                    severity: 'warning'
-                });
-                return;
-            }
-            saveSettings(true);
-            showLoading();
-            vscode.postMessage({
-                type: 'executeTool',
-                tool: 'list_coolify_applications',
-                args: {}
-            });
-        }
-
-        function getAppLogs(uuid) {
-            showLoading();
-            vscode.postMessage({
-                type: 'executeTool',
-                tool: 'get_coolify_application_logs',
-                args: { uuid: uuid }
-            });
-        }
-
-        function getAppStatus(uuid) {
-            showLoading();
-            vscode.postMessage({
-                type: 'executeTool',
-                tool: 'get_coolify_application_status',
-                args: { uuid: uuid }
-            });
-        }
-
-        function renderAppsList(data) {
-            let textData = '';
-            if (data && data.content && data.content[0] && data.content[0].text) {
-                textData = data.content[0].text;
-            } else {
-                return;
-            }
-            try {
-                const apps = JSON.parse(textData);
-                const listDiv = document.getElementById('coolify-apps-list');
-                listDiv.innerHTML = '';
-                if (!apps || apps.length === 0) {
-                    listDiv.innerHTML = '<div style="font-size:0.8rem; opacity:0.6;">No se encontraron aplicaciones.</div>';
-                    return;
-                }
-                apps.forEach(function(app) {
-                    const item = document.createElement('div');
-                    item.className = 'app-item';
-                    item.innerHTML = '<div class="app-info">' +
-                        '<span class="app-name">' + app.name + '</span>' +
-                        '<span class="app-status">UUID: ' + app.uuid.substring(0, 8) + '... | ' + (app.status || 'unknown') + '</span>' +
-                        '</div>' +
-                        '<div class="app-actions">' +
-                        '<button class="app-btn" onclick="getAppStatus(\'' + app.uuid + '\')">Status</button>' +
-                        '<button class="app-btn" onclick="getAppLogs(\'' + app.uuid + '\')">Logs</button>' +
-                        '</div>';
-                    listDiv.appendChild(item);
-                });
-                clearResult();
-            } catch(e) {}
-        }
-        
-        function showLoading() {
-            document.getElementById('resultPanel').style.display = 'block';
-            document.getElementById('resultOutput').innerHTML = '<div class="loader-spinner"></div> Ejecutando herramienta...';
+        function clearTerminal() {
+            const body = document.getElementById('terminalBody');
+            body.innerHTML = '<div class="terminal-line system-msg">Consola de logs limpiada.</div>';
         }
     </script>
 </body>
