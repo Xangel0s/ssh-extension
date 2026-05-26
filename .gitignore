@@ -1,0 +1,15 @@
+# Logs
+*.log
+mcp-ssh-go/mcp-server-debug.log
+extension-debug.log
+
+# Go binaries and files
+mcp-ssh-go/mcp-sre-server.exe
+mcp-ssh-go/mcp-sre-server.exe~
+mcp-ssh-go/.env
+
+# Node
+node_modules/
+.vsix
+out/
+.vscode/

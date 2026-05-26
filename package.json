@@ -1,0 +1,52 @@
+{
+  "name": "sysadmin-extension",
+  "displayName": "SysAdmin & MCP Manager",
+  "description": "Visual VS Code interface to manage, monitor, and run local MCP DevOps/SRE tools.",
+  "version": "1.0.0",
+  "publisher": "homelab",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./extension.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "sysadmin-sidebar",
+          "title": "SysAdmin SRE",
+          "icon": "resources/server-icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "sysadmin-sidebar": [
+        {
+          "type": "webview",
+          "id": "sysadmin-mcp-manager",
+          "name": "MCP Server Manager"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "sysadmin-extension.startServer",
+        "title": "Start MCP SRE Server"
+      },
+      {
+        "command": "sysadmin-extension.stopServer",
+        "title": "Stop MCP SRE Server"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "echo 'No compilation needed for pure JS extension'"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.74.0"
+  }
+}
