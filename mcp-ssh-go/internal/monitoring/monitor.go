@@ -3,7 +3,7 @@ package monitoring
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -65,7 +65,11 @@ func NewMonitor(s *server.MCPServer) *Monitor {
 
 func (m *Monitor) Start(ctx context.Context) {
 	ticker := time.NewTicker(m.interval)
-	log.Printf("[Monitoring]: Started background monitoring. Interval: %s, CPU threshold: %.1f%%, Memory threshold: %.1f%%", m.interval, m.cpuThreshold, m.memThreshold)
+	slog.Info("Started background monitoring",
+		"interval", m.interval,
+		"cpuThreshold", m.cpuThreshold,
+		"memThreshold", m.memThreshold,
+	)
 
 	// Run initial check immediately
 	go m.check()
@@ -99,14 +103,14 @@ func (m *Monitor) checkProxmox() {
 
 	client, err := proxmox.NewClientFromEnv()
 	if err != nil {
-		log.Printf("[Monitoring]: Failed to initialize Proxmox client: %v", err)
+		slog.Error("Failed to initialize Proxmox client in monitoring", "error", err)
 		return
 	}
 
 	for _, node := range m.proxmoxNodes {
 		status, err := client.GetNodeStatus(node)
 		if err != nil {
-			log.Printf("[Monitoring]: Failed to get status for Proxmox node %s: %v", node, err)
+			slog.Error("Failed to get status for Proxmox node in monitoring", "node", node, "error", err)
 			continue
 		}
 
@@ -142,13 +146,13 @@ func (m *Monitor) checkCoolify() {
 
 	client, err := coolify.NewClientFromEnv()
 	if err != nil {
-		log.Printf("[Monitoring]: Failed to initialize Coolify client: %v", err)
+		slog.Error("Failed to initialize Coolify client in monitoring", "error", err)
 		return
 	}
 
 	apps, err := client.ListApplications()
 	if err != nil {
-		log.Printf("[Monitoring]: Failed to list Coolify applications: %v", err)
+		slog.Error("Failed to list Coolify applications in monitoring", "error", err)
 		return
 	}
 

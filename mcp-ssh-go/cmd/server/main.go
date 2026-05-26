@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
+	"mcp-ssh-go/internal/monitoring"
 	"mcp-ssh-go/internal/tools"
 )
 
@@ -33,6 +35,13 @@ func main() {
 	handlerCtx := tools.NewHandlerContext()
 	handlerCtx.Server = s
 	handlerCtx.RegisterTools(s)
+
+	// Start background monitoring
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	monitor := monitoring.NewMonitor(s)
+	monitor.Start(ctx)
 
 	slog.Info("Starting stdio transport for JSON-RPC...")
 	if err := server.ServeStdio(s); err != nil {
