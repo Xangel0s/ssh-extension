@@ -16,6 +16,7 @@ import (
 // HandlerContext maintains shared dependencies across tools.
 type HandlerContext struct {
 	SSHPool *ssh.ClientPool
+	Server  *server.MCPServer
 }
 
 // NewHandlerContext initializes a new tools handler context.

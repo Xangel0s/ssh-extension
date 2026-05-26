@@ -2,12 +2,14 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
+	"mcp-ssh-go/internal/monitoring"
 	"mcp-ssh-go/internal/tools"
 )
 
@@ -23,7 +25,14 @@ func main() {
 
 	// Initialize tools context
 	handlerCtx := tools.NewHandlerContext()
+	handlerCtx.Server = s
 	handlerCtx.RegisterTools(s)
+
+	// Start monitoring loop in background
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	monitor := monitoring.NewMonitor(s)
+	monitor.Start(ctx)
 
 	log.Println("Starting MCP SRE server on stdio...")
 	if err := server.ServeStdio(s); err != nil {
