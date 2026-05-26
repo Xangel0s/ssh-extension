@@ -1,32 +1,33 @@
-const vscode = require('vscode');
-const cp = require('child_process');
-const path = require('path');
-const fs = require('fs');
+import * as vscode from 'vscode';
+import * as cp from 'child_process';
+import * as path from 'path';
+import * as fs from 'fs';
 
-let serverProcess = null;
+let serverProcess: cp.ChildProcess | null = null;
 let currentRequestId = 1;
-const pendingRequests = new Map();
-let outputChannel = null;
-let activeWebview = null;
+const pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (reason: any) => void }>();
+let outputChannel: vscode.OutputChannel | null = null;
+let activeWebview: vscode.WebviewView | null = null;
 
-function debugLog(msg) {
+function debugLog(msg: string) {
     try {
         const logPath = path.join(__dirname, 'extension-debug.log');
         const time = new Date().toISOString();
         fs.appendFileSync(logPath, `[${time}] ${msg}\n`);
-    } catch (e) {
+    } catch (e: any) {
         if (outputChannel) {
             outputChannel.appendLine(`Failed to write global debug log: ${e.message}`);
         }
     }
 }
 
-function activate(context) {
+export function activate(context: vscode.ExtensionContext) {
     debugLog("activate() called");
-    outputChannel = vscode.window.createOutputChannel("MCP SRE Manager");
+    // Create the Output Channel named "MCP SRE Audit" to capture stderr logs
+    outputChannel = vscode.window.createOutputChannel("MCP SRE Audit");
     context.subscriptions.push(outputChannel);
 
-    outputChannel.appendLine("MCP SRE Manager Extension Activated.");
+    outputChannel.appendLine("MCP SRE Audit Log Initialized.");
 
     // Register Webview View Provider
     const provider = new MCPSidebarProvider(context.extensionUri, context);
@@ -50,20 +51,27 @@ function activate(context) {
     );
 }
 
-function deactivate() {
+export function deactivate() {
     debugLog("deactivate() called");
     if (serverProcess) {
         serverProcess.kill();
     }
 }
 
-class MCPSidebarProvider {
-    constructor(extensionUri, context) {
+class MCPSidebarProvider implements vscode.WebviewViewProvider {
+    private readonly _extensionUri: vscode.Uri;
+    private readonly _context: vscode.ExtensionContext;
+
+    constructor(extensionUri: vscode.Uri, context: vscode.ExtensionContext) {
         this._extensionUri = extensionUri;
         this._context = context;
     }
 
-    resolveWebviewView(webviewView, context, _token) {
+    resolveWebviewView(
+        webviewView: vscode.WebviewView,
+        context: vscode.WebviewViewResolveContext,
+        _token: vscode.CancellationToken
+    ) {
         debugLog("resolveWebviewView() called");
         activeWebview = webviewView;
         webviewView.webview.options = {
@@ -167,13 +175,15 @@ class MCPSidebarProvider {
         });
     }
 
-    logToFile(logPath, msg) {
+    logToFile(logPath: string, msg: string) {
         debugLog(`logToFile: ${msg}`);
         try {
             const time = new Date().toISOString();
             fs.appendFileSync(logPath, `[${time}] ${msg}\n`);
-        } catch (e) {
-            outputChannel.appendLine(`Failed to write debug log file: ${e.message}`);
+        } catch (e: any) {
+            if (outputChannel) {
+                outputChannel.appendLine(`Failed to write debug log file: ${e.message}`);
+            }
         }
     }
 
@@ -238,11 +248,13 @@ class MCPSidebarProvider {
         this.logToFile(logPath, `Resolved logPath: ${logPath}`);
 
         const hasBin = !!binPath;
-        let cmd, args;
+        let cmd: string, args: string[];
         if (hasBin) {
             cmd = binPath;
             args = [];
-            outputChannel.appendLine(`Starting server using compiled binary: ${binPath}`);
+            if (outputChannel) {
+                outputChannel.appendLine(`Starting server using compiled binary: ${binPath}`);
+            }
             this.logToFile(logPath, `Starting using compiled binary: ${binPath}`);
         } else {
             // Find where Go source code is to run 'go run'
@@ -266,7 +278,9 @@ class MCPSidebarProvider {
             cwd = goSourceDir || extensionDir;
             cmd = 'go';
             args = ['run', './cmd/server/main.go'];
-            outputChannel.appendLine(`Starting server in development using 'go run ./cmd/server/main.go' in ${cwd}...`);
+            if (outputChannel) {
+                outputChannel.appendLine(`Starting server in development using 'go run ./cmd/server/main.go' in ${cwd}...`);
+            }
             this.logToFile(logPath, `Starting using 'go run ./cmd/server/main.go' in ${cwd}`);
         }
 
@@ -275,30 +289,31 @@ class MCPSidebarProvider {
         const proxmoxTokenValue = await this._context.secrets.get('proxmoxTokenValue') || '';
         const coolifyToken = await this._context.secrets.get('coolifyToken') || '';
 
-        const spawnOptions = {
+        const spawnOptions: cp.SpawnOptions = {
             cwd: cwd,
             env: {
                 ...process.env,
-                PROXMOX_URL: config.get('proxmoxUrl') || '',
-                PROXMOX_TOKEN_ID: config.get('proxmoxTokenId') || '',
+                PROXMOX_URL: config.get<string>('proxmoxUrl') || '',
+                PROXMOX_TOKEN_ID: config.get<string>('proxmoxTokenId') || '',
                 PROXMOX_TOKEN_VALUE: proxmoxTokenValue,
-                PROXMOX_SKIP_TLS_VERIFY: String(config.get('proxmoxSkipTlsVerify') !== false),
-                COOLIFY_URL: config.get('coolifyUrl') || '',
+                PROXMOX_SKIP_TLS_VERIFY: String(config.get<boolean>('proxmoxSkipTlsVerify') !== false),
+                COOLIFY_URL: config.get<string>('coolifyUrl') || '',
                 COOLIFY_TOKEN: coolifyToken,
-                COOLIFY_SKIP_TLS_VERIFY: String(config.get('coolifySkipTlsVerify') !== false),
-                MONITORING_INTERVAL: config.get('monitoringInterval') || '30s',
-                MONITORING_CPU_THRESHOLD: String(config.get('monitoringCpuThreshold') || 90),
-                MONITORING_MEM_THRESHOLD: String(config.get('monitoringMemThreshold') || 90)
+                COOLIFY_SKIP_TLS_VERIFY: String(config.get<boolean>('coolifySkipTlsVerify') !== false),
+                MONITORING_INTERVAL: config.get<string>('monitoringInterval') || '30s',
+                MONITORING_CPU_THRESHOLD: String(config.get<number>('monitoringCpuThreshold') || 90),
+                MONITORING_MEM_THRESHOLD: String(config.get<number>('monitoringMemThreshold') || 90)
             }
         };
 
         try {
-            serverProcess = cp.spawn(cmd, args, spawnOptions);
+            const proc = cp.spawn(cmd, args, spawnOptions);
+            serverProcess = proc;
             this.updateStatus('Running');
             vscode.window.showInformationMessage("MCP SRE Server started successfully.");
 
             let buffer = '';
-            serverProcess.stdout.on('data', (data) => {
+            proc.stdout?.on('data', (data: Buffer | string) => {
                 const rawStr = data.toString();
                 this.logToFile(logPath, `[Stdout Raw]: ${rawStr}`);
                 buffer += rawStr;
@@ -311,40 +326,46 @@ class MCPSidebarProvider {
                             const message = JSON.parse(line);
                             this.handleServerMessage(message);
                         } catch (e) {
-                            outputChannel.appendLine(`[Server raw stdout]: ${line}`);
+                            if (outputChannel) {
+                                outputChannel.appendLine(`[Server raw stdout]: ${line}`);
+                            }
                         }
                     }
                     boundary = buffer.indexOf('\n');
                 }
             });
 
-            serverProcess.stderr.on('data', (data) => {
+            proc.stderr?.on('data', (data: Buffer | string) => {
                 const str = data.toString();
-                outputChannel.appendLine(`[Server stderr]: ${str}`);
-                this.logToFile(logPath, `[Stderr]: ${str}`);
-                if (str.includes("Loaded environment variables")) {
-                    outputChannel.appendLine("[Loader]: Environment configured successfully.");
+                // Everything on stderr goes to OutputChannel for SRE Audit!
+                if (outputChannel) {
+                    outputChannel.append(str);
                 }
+                this.logToFile(logPath, `[Stderr]: ${str}`);
             });
 
-            serverProcess.on('error', (err) => {
-                outputChannel.appendLine(`[Spawn Error]: ${err.message}`);
+            proc.on('error', (err: any) => {
+                if (outputChannel) {
+                    outputChannel.appendLine(`[Spawn Error]: ${err.message}`);
+                }
                 this.logToFile(logPath, `[Spawn Error]: ${err.message}`);
                 let msg = `Failed to start MCP server: ${err.message}`;
                 if (err.code === 'ENOENT' && cmd === 'go') {
-                    msg = "No se pudo iniciar el servidor. No se encontró el ejecutable compiled de Go ('mcp-sre-server.exe') ni se pudo ejecutar 'go run' (¿Go está instalado y en el PATH?). Por favor compila el ejecutable con 'go build' primero.";
+                    msg = "No se pudo iniciar el servidor. No se encontró el ejecutable de Go ni el binario compiled.";
                 }
                 vscode.window.showErrorMessage(msg);
                 this.stopServer();
             });
 
-            serverProcess.on('close', (code) => {
-                outputChannel.appendLine(`MCP Server closed with exit code ${code}`);
+            proc.on('close', (code) => {
+                if (outputChannel) {
+                    outputChannel.appendLine(`MCP Server closed with exit code ${code}`);
+                }
                 this.logToFile(logPath, `MCP Server closed with exit code ${code}`);
                 serverProcess = null;
                 this.updateStatus('Stopped');
             });
-        } catch (e) {
+        } catch (e: any) {
             vscode.window.showErrorMessage(`Error spawning server: ${e.message}`);
             this.logToFile(logPath, `Spawn exception: ${e.message}`);
             this.updateStatus('Stopped');
@@ -363,13 +384,13 @@ class MCPSidebarProvider {
         vscode.window.showInformationMessage("MCP SRE Server stopped.");
     }
 
-    updateStatus(status) {
+    updateStatus(status: string) {
         if (activeWebview) {
             activeWebview.webview.postMessage({ type: 'status', value: status });
         }
     }
 
-    async handleServerMessage(message) {
+    async handleServerMessage(message: any) {
         if (message.method !== undefined && message.id !== undefined) {
             // Incoming request from Go server (Interactive command approval)
             if (message.method === 'custom/requestApproval') {
@@ -392,10 +413,12 @@ class MCPSidebarProvider {
                         approved: approved
                     }
                 };
-                if (serverProcess) {
+                if (serverProcess && serverProcess.stdin) {
                     serverProcess.stdin.write(JSON.stringify(response) + '\n');
                 }
-                outputChannel.appendLine(`[Security]: Command approval response sent: id=${reqId}, approved=${approved}`);
+                if (outputChannel) {
+                    outputChannel.appendLine(`[Security]: Command approval response sent: id=${reqId}, approved=${approved}`);
+                }
             }
         } else if (message.id !== undefined) {
             const pending = pendingRequests.get(message.id);
@@ -423,8 +446,8 @@ class MCPSidebarProvider {
         }
     }
 
-    sendJSONRPC(method, params = {}) {
-        if (!serverProcess) {
+    sendJSONRPC(method: string, params = {}) {
+        if (!serverProcess || !serverProcess.stdin) {
             return Promise.reject(new Error("Server is not running. Please start the server first."));
         }
         const id = currentRequestId++;
@@ -437,16 +460,16 @@ class MCPSidebarProvider {
 
         return new Promise((resolve, reject) => {
             pendingRequests.set(id, { resolve, reject });
-            serverProcess.stdin.write(JSON.stringify(request) + '\n');
+            serverProcess!.stdin!.write(JSON.stringify(request) + '\n');
         });
     }
 
-    async runTool(toolName, args) {
-        outputChannel.appendLine(`Invoking tool '${toolName}' with arguments: ${JSON.stringify(args)}`);
+    async runTool(toolName: string, args: any) {
+        if (outputChannel) {
+            outputChannel.appendLine(`Invoking tool '${toolName}' with arguments: ${JSON.stringify(args)}`);
+        }
         
         try {
-            // Handshake first if necessary, but standard mark3labs Go server just accepts calls directly
-            // Call tool endpoint: "tools/call"
             const result = await this.sendJSONRPC("tools/call", {
                 name: toolName,
                 arguments: args
@@ -460,8 +483,10 @@ class MCPSidebarProvider {
                     result: result
                 });
             }
-        } catch (err) {
-            outputChannel.appendLine(`Tool call error: ${JSON.stringify(err)}`);
+        } catch (err: any) {
+            if (outputChannel) {
+                outputChannel.appendLine(`Tool call error: ${JSON.stringify(err)}`);
+            }
             if (activeWebview) {
                 activeWebview.webview.postMessage({
                     type: 'toolResult',
@@ -473,7 +498,7 @@ class MCPSidebarProvider {
         }
     }
 
-    _getHtmlForWebview(webview) {
+    private _getHtmlForWebview(webview: vscode.Webview) {
         return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -981,7 +1006,12 @@ class MCPSidebarProvider {
             buttons.forEach(btn => btn.classList.remove('active'));
 
             document.getElementById('tab-' + tabId).classList.add('active');
-            event.target.classList.add('active');
+            
+            // Switch active class on current button
+            const activeBtn = document.querySelector('.tab-btn[onclick="switchTab(\\'' + tabId + '\\')"]');
+            if (activeBtn) {
+                activeBtn.classList.add('active');
+            }
         }
 
         function showResult(tool, success, data) {
@@ -1059,6 +1089,14 @@ class MCPSidebarProvider {
             });
         }
 
+        // Override toolResult handler to render coolify apps list if list_coolify_applications was run
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.type === 'toolResult' && message.tool === 'list_coolify_applications' && message.success) {
+                renderAppsList(message.result);
+            }
+        });
+
         function listCoolifyApps() {
             if (!serverRunning) {
                 vscode.postMessage({
@@ -1093,14 +1131,6 @@ class MCPSidebarProvider {
                 args: { uuid: uuid }
             });
         }
-
-        // Override toolResult handler to render coolify apps list if list_coolify_applications was run
-        window.addEventListener('message', event => {
-            const message = event.data;
-            if (message.type === 'toolResult' && message.tool === 'list_coolify_applications' && message.success) {
-                renderAppsList(message.result);
-            }
-        });
 
         function renderAppsList(data) {
             let textData = '';
@@ -1145,8 +1175,3 @@ class MCPSidebarProvider {
 </html>`;
     }
 }
-
-module.exports = {
-    activate,
-    deactivate
-};

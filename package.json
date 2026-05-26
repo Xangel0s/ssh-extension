@@ -11,7 +11,7 @@
     "Other"
   ],
   "activationEvents": [],
-  "main": "./extension.js",
+  "main": "./out/extension.js",
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -104,11 +104,14 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "echo 'No compilation needed for pure JS extension'",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
     "package": "vsce package"
   },
   "devDependencies": {
     "@types/vscode": "^1.74.0",
-    "@vscode/vsce": "^2.19.0"
+    "@types/node": "^16.11.7",
+    "@vscode/vsce": "^2.19.0",
+    "typescript": "^4.9.5"
   }
 }

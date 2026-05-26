@@ -2,24 +2,30 @@ package main
 
 import (
 	"bufio"
-	"context"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
-	"mcp-ssh-go/internal/monitoring"
 	"mcp-ssh-go/internal/tools"
 )
 
 func main() {
+	// Configure slog to write JSON to os.Stderr (vital for MCP to keep stdout clean)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	}))
+	slog.SetDefault(logger)
+
 	// Load environment variables from .env if present
 	loadEnv()
 
+	slog.Info("Initializing MCP SRE Manager Server...")
+
 	// Create a new MCP server
 	s := server.NewMCPServer(
-		"MCP SRE Devops Server",
+		"MCP SRE Manager Server",
 		"1.0.0",
 	)
 
@@ -28,15 +34,10 @@ func main() {
 	handlerCtx.Server = s
 	handlerCtx.RegisterTools(s)
 
-	// Start monitoring loop in background
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	monitor := monitoring.NewMonitor(s)
-	monitor.Start(ctx)
-
-	log.Println("Starting MCP SRE server on stdio...")
+	slog.Info("Starting stdio transport for JSON-RPC...")
 	if err := server.ServeStdio(s); err != nil {
-		log.Fatalf("Server error: %v", err)
+		slog.Error("Server termination error", "error", err)
+		os.Exit(1)
 	}
 }
 
@@ -56,6 +57,7 @@ func loadEnv() {
 		}
 		defer file.Close()
 
+		slog.Debug("Loaded environment variables", "path", path)
 		scanner := bufio.NewScanner(file)
 		for scanner.Scan() {
 			line := scanner.Text()
@@ -75,7 +77,6 @@ func loadEnv() {
 				}
 			}
 		}
-		log.Printf("Loaded environment variables from: %s", path)
 		break // Stop once the first valid .env is loaded
 	}
 }
