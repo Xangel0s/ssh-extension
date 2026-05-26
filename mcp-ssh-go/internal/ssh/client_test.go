@@ -61,3 +61,36 @@ func TestValidateCommand(t *testing.T) {
 		})
 	}
 }
+
+func TestAnalyzeCommand(t *testing.T) {
+	tests := []struct {
+		name             string
+		command          string
+		wantSafe         bool
+		wantApproval     bool
+		wantErr          bool
+	}{
+		{"Safe free", "free -m", true, false, false},
+		{"Write systemctl restart", "systemctl restart nginx", false, true, false},
+		{"Write docker run", "docker run -d alpine", false, true, false},
+		{"Write docker rm", "docker rm container_id", false, true, false},
+		{"Forbidden sudo restart", "sudo systemctl restart nginx", false, false, true},
+		{"Forbidden rm", "rm -rf /", false, false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			isSafe, requiresApproval, err := AnalyzeCommand(tt.command)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("AnalyzeCommand(%q) err = %v, wantErr %v", tt.command, err, tt.wantErr)
+				return
+			}
+			if isSafe != tt.wantSafe {
+				t.Errorf("AnalyzeCommand(%q) isSafe = %v, wantSafe %v", tt.command, isSafe, tt.wantSafe)
+			}
+			if requiresApproval != tt.wantApproval {
+				t.Errorf("AnalyzeCommand(%q) requiresApproval = %v, wantApproval %v", tt.command, requiresApproval, tt.wantApproval)
+			}
+		})
+	}
+}

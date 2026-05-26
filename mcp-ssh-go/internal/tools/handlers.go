@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"mcp-ssh-go/internal/coolify"
@@ -15,19 +18,39 @@ import (
 
 // HandlerContext maintains shared dependencies across tools.
 type HandlerContext struct {
-	SSHPool *ssh.ClientPool
-	Server  *server.MCPServer
+	SSHPool          *ssh.ClientPool
+	Server           *server.MCPServer
+	PendingApprovals map[string]chan bool
+	ApprovalMu       sync.Mutex
 }
 
 // NewHandlerContext initializes a new tools handler context.
 func NewHandlerContext() *HandlerContext {
 	return &HandlerContext{
-		SSHPool: ssh.NewClientPool(),
+		SSHPool:          ssh.NewClientPool(),
+		PendingApprovals: make(map[string]chan bool),
 	}
 }
 
 // RegisterTools registers all available SRE tools to the MCP server.
 func (h *HandlerContext) RegisterTools(s *server.MCPServer) {
+	// Register extension approval response handler
+	s.AddNotificationHandler("custom/approveResponse", func(ctx context.Context, notification mcp.JSONRPCNotification) {
+		idVal, okId := notification.Params.AdditionalFields["id"].(string)
+		appVal, okApp := notification.Params.AdditionalFields["approved"].(bool)
+		if okId && okApp {
+			h.ApprovalMu.Lock()
+			ch, ok := h.PendingApprovals[idVal]
+			h.ApprovalMu.Unlock()
+			if ok {
+				select {
+				case ch <- appVal:
+				default:
+				}
+			}
+		}
+	})
+
 	// --- SSH Tools ---
 	sshTool := mcp.NewTool("execute_ssh_diagnostic",
 		mcp.WithDescription("Executes a safe, read-only diagnostic command on a remote Linux host via SSH. Crucial for system checkups, checking resources (df, free, top), listing docker processes, or checking service logs (journalctl)."),
@@ -104,7 +127,55 @@ func (h *HandlerContext) handleSSHDiagnostic(ctx context.Context, request mcp.Ca
 	}
 
 	cmd := strings.TrimSpace(args.Command)
-	output, err := h.SSHPool.ExecuteCommand(config, cmd)
+
+	// Analyze command for interactive approval
+	isSafe, reqApp, err := ssh.AnalyzeCommand(cmd)
+	if err != nil {
+		return mcp.NewToolResultError(fmt.Sprintf("Security validation error: %v", err)), nil
+	}
+
+	approved := false
+	if reqApp {
+		if h.Server == nil {
+			return mcp.NewToolResultError("MCP Server context missing, cannot request command approval"), nil
+		}
+
+		reqID := uuid.New().String()
+		approvalChan := make(chan bool, 1)
+
+		h.ApprovalMu.Lock()
+		h.PendingApprovals[reqID] = approvalChan
+		h.ApprovalMu.Unlock()
+
+		defer func() {
+			h.ApprovalMu.Lock()
+			delete(h.PendingApprovals, reqID)
+			h.ApprovalMu.Unlock()
+		}()
+
+		// Request approval from the extension via notification
+		h.Server.SendNotificationToAllClients("custom/requestApproval", map[string]any{
+			"id":      reqID,
+			"command": cmd,
+		})
+
+		// Wait for interactive approval (max 30 seconds)
+		select {
+		case appVal := <-approvalChan:
+			approved = appVal
+			if !approved {
+				return mcp.NewToolResultError("SSH command execution denied by user"), nil
+			}
+		case <-time.After(30 * time.Second):
+			return mcp.NewToolResultError("SSH command approval request timed out"), nil
+		case <-ctx.Done():
+			return mcp.NewToolResultError("SSH command approval context cancelled"), nil
+		}
+	} else if !isSafe {
+		return mcp.NewToolResultError("SSH command is forbidden by security policies"), nil
+	}
+
+	output, err := h.SSHPool.ExecuteCommand(config, cmd, approved)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("SSH Execution error: %v", err)), nil
 	}

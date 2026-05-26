@@ -200,54 +200,55 @@ var (
 		"lsof":       true,
 	}
 
-	// Blocked shell features
+	// Blocked shell features (removed 'rm' and 'cp' to allow them as docker subcommands, validated selectively)
 	blockedPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`[>><&;]`), // Redirects, chaining, backgrounding (we split by pipeline/&&/|| manually first)
 		regexp.MustCompile(`\$\(.*?\)`), // Command substitution
 		regexp.MustCompile("`.*?`"),     // Backtick substitution
-		regexp.MustCompile(`\b(sudo|su|bash|sh|zsh|eval|rm|mv|cp|chmod|chown|wget|curl|apt|dpkg|yum|dnf|pip|npm|docker-compose)\b`),
+		regexp.MustCompile(`\b(sudo|su|bash|sh|zsh|eval|mv|chmod|chown|wget|curl|apt|dpkg|yum|dnf|pip|npm|docker-compose)\b`),
 	}
 )
 
-// ValidateCommand strictly validates the command to ensure it's a read-only SRE diagnostic command.
-func ValidateCommand(cmd string) error {
+// AnalyzeCommand strictly analyzes the command to identify if it is safe, requires approval, or is forbidden.
+func AnalyzeCommand(cmd string) (isSafe bool, requiresApproval bool, err error) {
 	trimmed := strings.TrimSpace(cmd)
 	if trimmed == "" {
-		return fmt.Errorf("command cannot be empty")
+		return false, false, fmt.Errorf("command cannot be empty")
 	}
 
 	// Split by pipeline character '|' to validate each segment separately
 	segments := strings.Split(trimmed, "|")
+	anyRequiresApproval := false
+
 	for _, segment := range segments {
 		segTrimmed := strings.TrimSpace(segment)
 		if segTrimmed == "" {
-			return fmt.Errorf("empty command segment in pipeline")
+			return false, false, fmt.Errorf("empty command segment in pipeline")
 		}
 
 		// Quick check for blocked patterns in this segment
 		for _, pattern := range blockedPatterns {
 			if pattern.MatchString(segTrimmed) {
-				return fmt.Errorf("command segment '%s' contains blocked operators or forbidden keywords", segTrimmed)
+				return false, false, fmt.Errorf("command segment '%s' contains blocked operators or forbidden keywords", segTrimmed)
 			}
 		}
 
 		parts := strings.Fields(segTrimmed)
 		if len(parts) == 0 {
-			return fmt.Errorf("invalid command structure in segment '%s'", segTrimmed)
+			return false, false, fmt.Errorf("invalid command structure in segment '%s'", segTrimmed)
 		}
 
 		rootCmd := parts[0]
 		if !allowedRootCommands[rootCmd] {
-			return fmt.Errorf("command '%s' is not allowed. Only read-only diagnostic commands are permitted", rootCmd)
+			return false, false, fmt.Errorf("command '%s' is not allowed. Only read-only diagnostic commands are permitted", rootCmd)
 		}
 
 		// Specific subcommand validations
 		switch rootCmd {
 		case "systemctl":
-			// Only status, is-active, is-failed, list-units, list-sockets, list-timers, show allowed
 			if len(parts) > 1 {
 				subCmd := parts[1]
-				allowedSub := map[string]bool{
+				allowedSafe := map[string]bool{
 					"status":       true,
 					"is-active":    true,
 					"is-failed":    true,
@@ -256,15 +257,26 @@ func ValidateCommand(cmd string) error {
 					"list-timers":  true,
 					"show":         true,
 				}
-				if !allowedSub[subCmd] {
-					return fmt.Errorf("systemctl subcommand '%s' is forbidden. Only status/read commands are allowed", subCmd)
+				allowedWrite := map[string]bool{
+					"start":   true,
+					"stop":    true,
+					"restart": true,
+					"reload":  true,
+					"enable":  true,
+					"disable": true,
+				}
+				if allowedSafe[subCmd] {
+					// Safe read-only
+				} else if allowedWrite[subCmd] {
+					anyRequiresApproval = true
+				} else {
+					return false, false, fmt.Errorf("systemctl subcommand '%s' is forbidden", subCmd)
 				}
 			}
 		case "docker":
-			// Only ps, stats, logs, inspect, port, version, info allowed
 			if len(parts) > 1 {
 				subCmd := parts[1]
-				allowedSub := map[string]bool{
+				allowedSafe := map[string]bool{
 					"ps":      true,
 					"stats":   true,
 					"logs":    true,
@@ -273,8 +285,21 @@ func ValidateCommand(cmd string) error {
 					"version": true,
 					"info":    true,
 				}
-				if !allowedSub[subCmd] {
-					return fmt.Errorf("docker subcommand '%s' is forbidden. Only read-only commands are allowed", subCmd)
+				allowedWrite := map[string]bool{
+					"start":   true,
+					"stop":    true,
+					"restart": true,
+					"rm":      true,
+					"run":     true,
+					"exec":    true,
+					"kill":    true,
+				}
+				if allowedSafe[subCmd] {
+					// Safe read-only
+				} else if allowedWrite[subCmd] {
+					anyRequiresApproval = true
+				} else {
+					return false, false, fmt.Errorf("docker subcommand '%s' is forbidden", subCmd)
 				}
 			}
 		case "cat":
@@ -283,19 +308,38 @@ func ValidateCommand(cmd string) error {
 			for _, arg := range parts[1:] {
 				argLower := strings.ToLower(arg)
 				if strings.Contains(argLower, "shadow") || strings.Contains(argLower, "passwd") || strings.Contains(argLower, "key") || strings.Contains(argLower, "secret") || strings.Contains(argLower, ".ssh") {
-					return fmt.Errorf("reading sensitive files with cat is forbidden")
+					return false, false, fmt.Errorf("reading sensitive files with cat is forbidden")
 				}
 			}
 		}
 	}
 
+	return !anyRequiresApproval, anyRequiresApproval, nil
+}
+
+// ValidateCommand strictly validates the command to ensure it's a read-only SRE diagnostic command.
+func ValidateCommand(cmd string) error {
+	isSafe, _, err := AnalyzeCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if !isSafe {
+		return fmt.Errorf("command requires interactive approval")
+	}
 	return nil
 }
 
 // ExecuteCommand executes a validated command on the specified host.
-func (p *ClientPool) ExecuteCommand(config SSHConfig, cmd string) (string, error) {
-	if err := ValidateCommand(cmd); err != nil {
+func (p *ClientPool) ExecuteCommand(config SSHConfig, cmd string, approved bool) (string, error) {
+	isSafe, reqApp, err := AnalyzeCommand(cmd)
+	if err != nil {
 		return "", fmt.Errorf("security validation failed: %w", err)
+	}
+	if reqApp && !approved {
+		return "", fmt.Errorf("command requires interactive approval")
+	}
+	if !isSafe && !reqApp {
+		return "", fmt.Errorf("command is forbidden")
 	}
 
 	client, err := p.GetClient(config)
