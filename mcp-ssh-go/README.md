@@ -58,6 +58,14 @@ Añade el servidor en la sección `mcpServers`:
 
 *Nota: Los valores de Proxmox y Coolify son opcionales. Si no se configuran, las herramientas correspondientes devolverán un error amigable al ejecutarse, pero el servidor iniciará sin problemas y las herramientas SSH seguirán funcionando.*
 
+### 🔌 Extensión de VS Code (Sysadmin Extension)
+La extensión integrada en esta carpeta (`sysadmin-extension`) permite gestionar, arrancar y monitorear este servidor MCP directamente desde una barra lateral en el IDE.
+
+* **Independencia del Espacio de Trabajo (Workspace-Agnostic):** La extensión resuelve las rutas de ejecución dinámicamente buscando el ejecutable compilado en su propio directorio de instalación (`c:\Users\User\Documents\sysadmin-extension\mcp-ssh-go`). Esto permite arrancar el servidor MCP sin importar qué carpeta o archivo tengas abierto actualmente en la ventana de VS Code.
+* **Sistema de Logs de Depuración:** 
+  - `extension-debug.log` (en la raíz de la extensión): Registra la activación, comunicación por mensajes de la UI y eventos del ciclo de vida de la extensión.
+  - `mcp-server-debug.log` (en la carpeta `mcp-ssh-go`): Guarda el estado, la salida estándar (stdout/stderr) y códigos de salida detallados del binario Go.
+
 ---
 
 ## 🔒 Filtro de Seguridad SRE (SSH)
@@ -67,3 +75,18 @@ El servidor valida cada comando antes de enviarlo a la máquina remota:
 * **Acciones Bloqueadas en Systemctl:** Solo se permiten subcomandos de consulta: `status`, `is-active`, `is-failed`, `list-units`, `list-sockets`, `list-timers`, `show`. Modificadores como `stop`, `start`, `restart`, `disable` o `enable` están bloqueados.
 * **Acciones Bloqueadas en Docker:** Solo lectura: `ps`, `stats`, `logs`, `inspect`, `port`, `version`, `info`. Modificadores como `run`, `rm`, `exec` o `stop` están bloqueados.
 * **Archivos Bloqueados en Cat:** Bloquea de forma proactiva la visualización de `/etc/shadow`, `/etc/passwd`, claves SSH (`.ssh`, `id_rsa`) y tokens confidenciales.
+
+---
+
+## 🗺️ Roadmap & Siguientes Pasos
+
+1. **📦 Empaquetado en formato `.vsix`:**
+   - Crear un script de empaquetado automático (`vsce package`) para poder instalar la extensión localmente con un clic, sin requerir abrir el modo de desarrollo de VS Code.
+2. **⚙️ Configuración Visual de Credenciales:**
+   - Crear una pestaña de "Ajustes" en el panel lateral que permita editar las variables de entorno (`.env`) y la configuración de Proxmox/Coolify directamente desde la UI con inputs amigables.
+3. **🔔 Notificaciones y Alertas Activas:**
+   - Implementar un demonio de fondo en Go que monitorice umbrales críticos de CPU/RAM en Proxmox o estados en Coolify, y envíe notificaciones de advertencia nativas a VS Code cuando algo falle.
+4. **🔑 Gestión Segura de Claves (Secret Vault):**
+   - Integrar la extensión con el VS Code SecretStorage API para guardar passwords de SSH y API tokens de forma segura en el llavero nativo del sistema operativo (Keychain / Windows Credential Manager).
+5. **🛡️ Acciones de Escritura Autorizadas (Aprobación Interactiva):**
+   - Habilitar comandos para reiniciar servicios o contenedores, pero solicitando confirmación interactiva en pantalla al usuario mediante diálogos emergentes de VS Code antes de enviarlos por SSH.
