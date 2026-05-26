@@ -391,8 +391,8 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     async handleServerMessage(message: any) {
-        if (message.method !== undefined && message.id !== undefined) {
-            // Incoming request from Go server (Interactive command approval)
+        if (message.method !== undefined) {
+            // Notifications or Custom Requests from Go server
             if (message.method === 'custom/requestApproval') {
                 const command = message.params.command;
                 const reqId = message.params.id;
@@ -419,6 +419,16 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                 if (outputChannel) {
                     outputChannel.appendLine(`[Security]: Command approval response sent: id=${reqId}, approved=${approved}`);
                 }
+            } else if (message.method === 'notifications/alert') {
+                const msg = message.params.message;
+                const level = message.params.level || 'info';
+                if (level === 'warning') {
+                    vscode.window.showWarningMessage(`[MCP Alert]: ${msg}`);
+                } else if (level === 'error') {
+                    vscode.window.showErrorMessage(`[MCP Alert]: ${msg}`);
+                } else {
+                    vscode.window.showInformationMessage(`[MCP Alert]: ${msg}`);
+                }
             }
         } else if (message.id !== undefined) {
             const pending = pendingRequests.get(message.id);
@@ -428,19 +438,6 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                     pending.reject(message.error);
                 } else {
                     pending.resolve(message.result);
-                }
-            }
-        } else if (message.method !== undefined) {
-            // Notification from Go server (Alerts)
-            if (message.method === 'notifications/alert') {
-                const msg = message.params.message;
-                const level = message.params.level || 'info';
-                if (level === 'warning') {
-                    vscode.window.showWarningMessage(`[MCP Alert]: ${msg}`);
-                } else if (level === 'error') {
-                    vscode.window.showErrorMessage(`[MCP Alert]: ${msg}`);
-                } else {
-                    vscode.window.showInformationMessage(`[MCP Alert]: ${msg}`);
                 }
             }
         }
