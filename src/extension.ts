@@ -8,8 +8,64 @@ let currentRequestId = 1;
 const pendingRequests = new Map<number, { resolve: (value: any) => void; reject: (reason: any) => void }>();
 let outputChannel: vscode.OutputChannel | null = null;
 let activeWebview: vscode.WebviewView | null = null;
+let logWatcher: fs.FSWatcher | null = null;
+let lastLogSize = 0;
+
+function startLogWatcher(logPath: string) {
+    if (logWatcher) {
+        logWatcher.close();
+    }
+
+    const dir = path.dirname(logPath);
+    if (!fs.existsSync(dir)) {
+        try {
+            fs.mkdirSync(dir, { recursive: true });
+        } catch(e) {}
+    }
+
+    if (!fs.existsSync(logPath)) {
+        try {
+            fs.writeFileSync(logPath, '');
+        } catch (e) {}
+    }
+
+    try {
+        lastLogSize = fs.statSync(logPath).size;
+        logWatcher = fs.watch(logPath, (eventType) => {
+            if (eventType === 'change') {
+                try {
+                    const stats = fs.statSync(logPath);
+                    if (stats.size > lastLogSize) {
+                        const stream = fs.createReadStream(logPath, {
+                            encoding: 'utf8',
+                            start: lastLogSize,
+                            end: stats.size
+                        });
+                        stream.on('data', (chunk) => {
+                            if (activeWebview) {
+                                activeWebview.webview.postMessage({
+                                    type: 'mcpLog',
+                                    value: chunk.toString()
+                                });
+                            }
+                        });
+                        lastLogSize = stats.size;
+                    } else if (stats.size < lastLogSize) {
+                        lastLogSize = stats.size;
+                    }
+                } catch (err) {
+                    console.error("Error reading log updates:", err);
+                }
+            }
+        });
+        console.log(`[SysAdmin SRE] Log watcher started on ${logPath}`);
+    } catch (err) {
+        console.error("Failed to start log watcher:", err);
+    }
+}
 
 function debugLog(msg: string) {
+    console.log(`[SysAdmin SRE Extension] ${msg}`);
     try {
         const logPath = path.join(__dirname, 'extension-debug.log');
         const time = new Date().toISOString();
@@ -81,8 +137,23 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
 
         webviewView.webview.html = this._getHtmlForWebview(webviewView.webview);
 
+        const extensionDir = this._context.extensionUri.fsPath;
+        const logPath = path.join(extensionDir, 'mcp-ssh-go', 'mcp-server-debug.log');
+        startLogWatcher(logPath);
+
         // Send current status immediately
         this.updateStatus(serverProcess ? 'Running' : 'Stopped');
+
+        // Check for lock file periodically to update panel state
+        setInterval(() => {
+            const extensionDir = this._context.extensionUri.fsPath;
+            const lockPath = path.join(extensionDir, 'mcp-ssh-go', 'mcp-server.lock');
+            if (fs.existsSync(lockPath)) {
+                this.updateStatus('Attached');
+            } else {
+                this.updateStatus(serverProcess ? 'Running' : 'Stopped');
+            }
+        }, 2000);
 
         webviewView.webview.onDidReceiveMessage(async (data) => {
             debugLog(`Received message from webview: ${JSON.stringify(data)}`);
@@ -141,24 +212,6 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                     const oldCoolifyUrl = config.get('coolifyUrl') || '';
                     const oldCoolifySkipTls = config.get('coolifySkipTlsVerify') !== false;
                     const oldMonInterval = config.get('monitoringInterval') || '30s';
-                    const oldMonCpu = config.get('monitoringCpuThreshold') || 90;
-                    const oldMonMem = config.get('monitoringMemThreshold') || 90;
-                    const oldPxTokenVal = await this._context.secrets.get('proxmoxTokenValue') || '';
-                    const oldCoolifyToken = await this._context.secrets.get('coolifyToken') || '';
-
-                    // Check if env settings changed
-                    const envChanged = 
-                        oldPxUrl !== data.config.proxmoxUrl ||
-                        oldPxTokenId !== data.config.proxmoxTokenId ||
-                        oldPxSkipTls !== data.config.proxmoxSkipTlsVerify ||
-                        oldCoolifyUrl !== data.config.coolifyUrl ||
-                        oldCoolifySkipTls !== data.config.coolifySkipTlsVerify ||
-                        oldMonInterval !== data.config.monitoringInterval ||
-                        oldMonCpu !== data.config.monitoringCpuThreshold ||
-                        oldMonMem !== data.config.monitoringMemThreshold ||
-                        oldPxTokenVal !== (data.secrets.proxmoxTokenValue || '') ||
-                        oldCoolifyToken !== (data.secrets.coolifyToken || '');
-
                     await config.update('sshHost', data.config.sshHost, vscode.ConfigurationTarget.Global);
                     await config.update('sshKeyPath', data.config.sshKeyPath, vscode.ConfigurationTarget.Global);
                     await config.update('sshPort', data.config.sshPort, vscode.ConfigurationTarget.Global);
@@ -189,21 +242,51 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                         await this._context.secrets.delete('coolifyToken');
                     }
                     
+                    // Auto-generate/update .vscode/mcp.json in workspace root
+                    const workspaceFolders = vscode.workspace.workspaceFolders;
+                    const workspaceRoot = (workspaceFolders && workspaceFolders.length > 0) ? workspaceFolders[0].uri.fsPath : null;
+                    if (workspaceRoot) {
+                        const mcpDir = path.join(workspaceRoot, '.vscode');
+                        if (!fs.existsSync(mcpDir)) {
+                            try { fs.mkdirSync(mcpDir, { recursive: true }); } catch (e) {}
+                        }
+                        const mcpJsonPath = path.join(mcpDir, 'mcp.json');
+                        const extensionDir = this._context.extensionUri.fsPath;
+                        const binPath = path.join(extensionDir, 'mcp-ssh-go', 'mcp-sre-server.exe');
+                        
+                        const mcpConfig = {
+                            servers: {
+                                "sysadmin-sre-mcp": {
+                                    command: fs.existsSync(binPath) ? binPath : "go",
+                                    args: fs.existsSync(binPath) ? [] : ["run", "./cmd/server/main.go"],
+                                    env: {
+                                        PROXMOX_URL: data.config.proxmoxUrl || '',
+                                        PROXMOX_TOKEN_ID: data.config.proxmoxTokenId || '',
+                                        PROXMOX_TOKEN_VALUE: data.secrets.proxmoxTokenValue || '',
+                                        PROXMOX_SKIP_TLS_VERIFY: String(data.config.proxmoxSkipTlsVerify !== false),
+                                        COOLIFY_URL: data.config.coolifyUrl || '',
+                                        COOLIFY_TOKEN: data.secrets.coolifyToken || '',
+                                        COOLIFY_SKIP_TLS_VERIFY: String(data.config.coolifySkipTlsVerify !== false),
+                                        MONITORING_INTERVAL: '30s',
+                                        SSH_HOST: data.config.sshHost || '',
+                                        SSH_USER: data.config.sshUser || '',
+                                        SSH_PORT: String(data.config.sshPort || 22),
+                                        SSH_PASS: data.secrets.sshPass || ''
+                                    }
+                                }
+                            }
+                        };
+                        try {
+                            fs.writeFileSync(mcpJsonPath, JSON.stringify(mcpConfig, null, 4), 'utf8');
+                        } catch (e) {
+                            console.error("Failed to write mcp.json file:", e);
+                        }
+                    }
+                    
                     if (!data.quiet) {
                         vscode.window.showInformationMessage("Ajustes guardados correctamente.");
                     }
 
-                    // Auto-restart backend server if environment configurations changed and server is running
-                    if (envChanged && serverProcess) {
-                        if (outputChannel) {
-                            outputChannel.appendLine("Ajustes de backend modificados: reiniciando servidor Go automáticamente...");
-                        }
-                        this.stopServer();
-                        setTimeout(() => {
-                            this.startServer();
-                        }, 500);
-                    }
-                    
                     // Refresh settings in UI
                     webviewView.webview.postMessage({
                         type: 'settings',
@@ -238,206 +321,11 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     async startServer() {
-        if (serverProcess) {
-            vscode.window.showInformationMessage("MCP Server is already running.");
-            return;
-        }
-
-        const extensionDir = this._context.extensionUri.fsPath;
-        const workspaceFolders = vscode.workspace.workspaceFolders;
-        const workspaceRoot = (workspaceFolders && workspaceFolders.length > 0) ? workspaceFolders[0].uri.fsPath : null;
-        
-        // Robust scanning for compiled binary
-        let binPath = "";
-        let cwd = "";
-
-        const binarySearchPaths = [
-            {
-                bin: path.join(extensionDir, 'mcp-ssh-go', 'mcp-sre-server.exe'),
-                dir: path.join(extensionDir, 'mcp-ssh-go')
-            },
-            {
-                bin: path.join(extensionDir, 'mcp-sre-server.exe'),
-                dir: extensionDir
-            }
-        ];
-
-        if (workspaceRoot) {
-            binarySearchPaths.push({
-                bin: path.join(workspaceRoot, 'mcp-ssh-go', 'mcp-sre-server.exe'),
-                dir: path.join(workspaceRoot, 'mcp-ssh-go')
-            });
-            binarySearchPaths.push({
-                bin: path.join(workspaceRoot, 'mcp-sre-server.exe'),
-                dir: workspaceRoot
-            });
-        }
-
-        // Search for the first existing compiled binary
-        for (const item of binarySearchPaths) {
-            if (fs.existsSync(item.bin)) {
-                binPath = item.bin;
-                cwd = item.dir;
-                break;
-            }
-        }
-
-        const logPath = path.join(cwd || extensionDir, 'mcp-server-debug.log');
-
-        // Clean old log file
-        try {
-            if (fs.existsSync(logPath)) {
-                fs.unlinkSync(logPath);
-            }
-        } catch (e) {}
-
-        this.logToFile(logPath, `Resolved extensionDir: ${extensionDir}`);
-        this.logToFile(logPath, `Resolved workspaceRoot: ${workspaceRoot}`);
-        this.logToFile(logPath, `Resolved binPath: ${binPath}`);
-        this.logToFile(logPath, `Resolved cwd: ${cwd}`);
-        this.logToFile(logPath, `Resolved logPath: ${logPath}`);
-
-        const hasBin = !!binPath;
-        let cmd: string, args: string[];
-        if (hasBin) {
-            cmd = binPath;
-            args = [];
-            if (outputChannel) {
-                outputChannel.appendLine(`Starting server using compiled binary: ${binPath}`);
-            }
-            this.logToFile(logPath, `Starting using compiled binary: ${binPath}`);
-        } else {
-            // Find where Go source code is to run 'go run'
-            let goSourceDir = "";
-            const sourceSearchPaths = [
-                path.join(extensionDir, 'mcp-ssh-go'),
-                extensionDir
-            ];
-            if (workspaceRoot) {
-                sourceSearchPaths.push(path.join(workspaceRoot, 'mcp-ssh-go'));
-                sourceSearchPaths.push(workspaceRoot);
-            }
-
-            for (const sPath of sourceSearchPaths) {
-                if (fs.existsSync(path.join(sPath, 'cmd', 'server', 'main.go'))) {
-                    goSourceDir = sPath;
-                    break;
-                }
-            }
-
-            cwd = goSourceDir || extensionDir;
-            cmd = 'go';
-            args = ['run', './cmd/server/main.go'];
-            if (outputChannel) {
-                outputChannel.appendLine(`Starting server in development using 'go run ./cmd/server/main.go' in ${cwd}...`);
-            }
-            this.logToFile(logPath, `Starting using 'go run ./cmd/server/main.go' in ${cwd}`);
-        }
-
-        const config = vscode.workspace.getConfiguration('mcpSreManager');
-        const sshPass = await this._context.secrets.get('sshPass') || '';
-        const proxmoxTokenValue = await this._context.secrets.get('proxmoxTokenValue') || '';
-        const coolifyToken = await this._context.secrets.get('coolifyToken') || '';
-
-        const spawnOptions: cp.SpawnOptions = {
-            cwd: cwd,
-            env: {
-                ...process.env,
-                PROXMOX_URL: config.get<string>('proxmoxUrl') || '',
-                PROXMOX_TOKEN_ID: config.get<string>('proxmoxTokenId') || '',
-                PROXMOX_TOKEN_VALUE: proxmoxTokenValue,
-                PROXMOX_SKIP_TLS_VERIFY: String(config.get<boolean>('proxmoxSkipTlsVerify') !== false),
-                COOLIFY_URL: config.get<string>('coolifyUrl') || '',
-                COOLIFY_TOKEN: coolifyToken,
-                COOLIFY_SKIP_TLS_VERIFY: String(config.get<boolean>('coolifySkipTlsVerify') !== false),
-                MONITORING_INTERVAL: config.get<string>('monitoringInterval') || '30s',
-                MONITORING_CPU_THRESHOLD: String(config.get<number>('monitoringCpuThreshold') || 90),
-                MONITORING_MEM_THRESHOLD: String(config.get<number>('monitoringMemThreshold') || 90)
-            }
-        };
-
-        try {
-            const proc = cp.spawn(cmd, args, spawnOptions);
-            serverProcess = proc;
-            this.updateStatus('Running');
-            vscode.window.showInformationMessage("MCP SRE Server started successfully.");
-
-            let buffer = '';
-            proc.stdout?.on('data', (data: Buffer | string) => {
-                const rawStr = data.toString();
-                this.logToFile(logPath, `[Stdout Raw]: ${rawStr}`);
-                buffer += rawStr;
-                let boundary = buffer.indexOf('\n');
-                while (boundary !== -1) {
-                    const line = buffer.substring(0, boundary).trim();
-                    buffer = buffer.substring(boundary + 1);
-                    if (line) {
-                        try {
-                            const message = JSON.parse(line);
-                            this.handleServerMessage(message);
-                        } catch (e) {
-                            if (outputChannel) {
-                                outputChannel.appendLine(`[Server raw stdout]: ${line}`);
-                            }
-                        }
-                    }
-                    boundary = buffer.indexOf('\n');
-                }
-            });
-
-            proc.stderr?.on('data', (data: Buffer | string) => {
-                const str = data.toString();
-                // Everything on stderr goes to OutputChannel for SRE Audit!
-                if (outputChannel) {
-                    outputChannel.append(str);
-                }
-                this.logToFile(logPath, `[Stderr]: ${str}`);
-                if (activeWebview) {
-                    activeWebview.webview.postMessage({
-                        type: 'mcpLog',
-                        value: str
-                    });
-                }
-            });
-
-            proc.on('error', (err: any) => {
-                if (outputChannel) {
-                    outputChannel.appendLine(`[Spawn Error]: ${err.message}`);
-                }
-                this.logToFile(logPath, `[Spawn Error]: ${err.message}`);
-                let msg = `Failed to start MCP server: ${err.message}`;
-                if (err.code === 'ENOENT' && cmd === 'go') {
-                    msg = "No se pudo iniciar el servidor. No se encontró el ejecutable de Go ni el binario compiled.";
-                }
-                vscode.window.showErrorMessage(msg);
-                this.stopServer();
-            });
-
-            proc.on('close', (code) => {
-                if (outputChannel) {
-                    outputChannel.appendLine(`MCP Server closed with exit code ${code}`);
-                }
-                this.logToFile(logPath, `MCP Server closed with exit code ${code}`);
-                serverProcess = null;
-                this.updateStatus('Stopped');
-            });
-        } catch (e: any) {
-            vscode.window.showErrorMessage(`Error spawning server: ${e.message}`);
-            this.logToFile(logPath, `Spawn exception: ${e.message}`);
-            this.updateStatus('Stopped');
-        }
+        // Go server is managed exclusively by VS Code / Copilot
     }
 
     stopServer() {
-        if (!serverProcess) {
-            vscode.window.showInformationMessage("MCP Server is not running.");
-            return;
-        }
-
-        serverProcess.kill();
-        serverProcess = null;
-        this.updateStatus('Stopped');
-        vscode.window.showInformationMessage("MCP SRE Server stopped.");
+        // Go server is managed exclusively by VS Code / Copilot
     }
 
     updateStatus(status: string) {
@@ -447,6 +335,7 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     async handleServerMessage(message: any) {
+        console.log(`[SysAdmin SRE] Server JSON-RPC message:`, message);
         if (message.method !== undefined) {
             // Notifications or Custom Requests from Go server
             if (message.method === 'custom/requestApproval') {
@@ -500,6 +389,7 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
     }
 
     sendJSONRPC(method: string, params = {}) {
+        console.log(`[SysAdmin SRE] Sending JSON-RPC request to server: method=${method}`, params);
         if (!serverProcess || !serverProcess.stdin) {
             return Promise.reject(new Error("Server is not running. Please start the server first."));
         }
@@ -745,6 +635,11 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             box-shadow: 0 0 6px #3fb950;
         }
 
+        .status-Attached .status-dot {
+            background-color: #58a6ff;
+            box-shadow: 0 0 6px #58a6ff;
+        }
+
         .status-Stopped .status-dot {
             background-color: #f85149;
             box-shadow: 0 0 6px #f85149;
@@ -836,12 +731,46 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+        
+        /* Tabs navigation */
+        .tabs-header {
+            display: flex;
+            border-bottom: 1px solid var(--vscode-panel-border, #30363d);
+            margin-bottom: 12px;
+            gap: 4px;
+        }
+        .tab-btn {
+            background: none;
+            border: none;
+            color: var(--vscode-descriptionForeground);
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            font-weight: 500;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab-btn:hover {
+            color: var(--vscode-foreground);
+        }
+        .tab-btn.active {
+            color: var(--vscode-textPreformat-foreground, #58a6ff);
+            border-bottom-color: var(--vscode-textPreformat-foreground, #58a6ff);
+        }
     </style>
 </head>
 <body>
     <h2>
         <span>MCP SRE Manager</span>
     </h2>
+
+    <!-- SETTINGS TABS HEADER -->
+    <div id="settings-tabs" class="tabs-header" style="display:none;">
+        <button id="btn-tab-1" class="tab-btn active" onclick="showStep(1)">SSH</button>
+        <button id="btn-tab-2" class="tab-btn" onclick="showStep(2)">Proxmox</button>
+        <button id="btn-tab-3" class="tab-btn" onclick="showStep(3)">Coolify</button>
+        <button class="tab-btn" onclick="goToDashboard()" style="margin-left:auto; color:var(--vscode-button-foreground); background:var(--vscode-button-background); border-radius:4px; padding:2px 8px;">Dashboard</button>
+    </div>
 
     <!-- STEP 1: SSH CONFIGURATION -->
     <div id="step-1" class="wizard-card" style="display:none;">
@@ -863,8 +792,12 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             <input type="number" id="ssh-port" value="22">
         </div>
         <div class="form-group">
-            <label>Ruta a la Llave Privada SSH *</label>
+            <label>Ruta a la Llave Privada SSH</label>
             <input type="text" id="ssh-key-path" placeholder="e.g. C:\\Users\\User\\.ssh\\id_rsa">
+        </div>
+        <div class="form-group">
+            <label>Contraseña SSH (si no usas llave privada)</label>
+            <input type="password" id="ssh-pass" placeholder="Tu contraseña de SSH">
         </div>
         <div style="margin-top: 10px;">
             <button class="btn" onclick="saveStep1()">Guardar y Continuar</button>
@@ -941,10 +874,8 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             <span id="statusText">Stopped</span>
         </div>
 
-        <div class="controls-row">
-            <button class="btn" id="startBtn">Iniciar</button>
-            <button class="btn btn-secondary" id="stopBtn" style="display:none;">Detener</button>
-            <button class="btn btn-secondary" id="restartBtn">Reiniciar</button>
+        <div style="font-size: 0.72rem; color: var(--vscode-descriptionForeground); margin-bottom: 6px; padding: 6px; border: 1px solid rgba(255,255,255,0.05); border-radius: 4px; background: rgba(0,0,0,0.1); line-height: 1.3;">
+            ℹ️ Servidor administrado automáticamente por VS Code / Copilot. La extensión actúa como un monitor en tiempo real.
         </div>
 
         <div class="terminal-container">
@@ -962,6 +893,7 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
         const vscode = acquireVsCodeApi();
         let serverRunning = false;
         let onboardingCompleted = false;
+        let isInitialLoad = true;
 
         document.getElementById('startBtn').addEventListener('click', function() {
             vscode.postMessage({ type: 'start' });
@@ -987,6 +919,7 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                     document.getElementById('ssh-key-path').value = message.config.sshKeyPath || '';
                     document.getElementById('ssh-port').value = message.config.sshPort || 22;
                     document.getElementById('ssh-user').value = message.config.sshUser || 'root';
+                    document.getElementById('ssh-pass').value = message.secrets.sshPass || '';
                     
                     document.getElementById('px-url').value = message.config.proxmoxUrl || '';
                     document.getElementById('px-token-id').value = message.config.proxmoxTokenId || '';
@@ -996,12 +929,15 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                     document.getElementById('coolify-url').value = message.config.coolifyUrl || '';
                     document.getElementById('coolify-token').value = message.secrets.coolifyToken || '';
                     
-                    // Auto-skip onboarding if SSH config already exists
-                    if (message.config.sshHost && message.config.sshUser) {
-                        onboardingCompleted = true;
-                        showStep('dashboard');
-                    } else {
-                        showStep(1);
+                    // Auto-skip onboarding only on initial load if SSH config already exists
+                    if (isInitialLoad) {
+                        isInitialLoad = false;
+                        if (message.config.sshHost && message.config.sshUser) {
+                            onboardingCompleted = true;
+                            showStep('dashboard');
+                        } else {
+                            showStep(1);
+                        }
                     }
                     break;
                 case 'mcpLog': {
@@ -1036,10 +972,24 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
         vscode.postMessage({ type: 'getSettings' });
 
         function showStep(step) {
+            const isSettings = (step === 1 || step === 2 || step === 3);
+            document.getElementById('settings-tabs').style.display = isSettings ? 'flex' : 'none';
+            
             document.getElementById('step-1').style.display = (step === 1) ? 'block' : 'none';
             document.getElementById('step-2').style.display = (step === 2) ? 'block' : 'none';
             document.getElementById('step-3').style.display = (step === 3) ? 'block' : 'none';
             document.getElementById('step-dashboard').style.display = (step === 'dashboard') ? 'block' : 'none';
+            
+            if (isSettings) {
+                document.getElementById('btn-tab-1').className = 'tab-btn' + (step === 1 ? ' active' : '');
+                document.getElementById('btn-tab-2').className = 'tab-btn' + (step === 2 ? ' active' : '');
+                document.getElementById('btn-tab-3').className = 'tab-btn' + (step === 3 ? ' active' : '');
+            }
+        }
+
+        function goToDashboard() {
+            onboardingCompleted = true;
+            showStep('dashboard');
         }
 
         function saveSettings(quiet) {
@@ -1061,7 +1011,7 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
                     monitoringMemThreshold: 90
                 },
                 secrets: {
-                    sshPass: '', // SSH Key route used instead of password
+                    sshPass: document.getElementById('ssh-pass').value,
                     proxmoxTokenValue: document.getElementById('px-token-val').value,
                     coolifyToken: document.getElementById('coolify-token').value
                 },
@@ -1072,11 +1022,20 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
         function saveStep1() {
             const host = document.getElementById('ssh-host').value.trim();
             const user = document.getElementById('ssh-user').value.trim();
+            const port = document.getElementById('ssh-port').value.trim();
             const keyPath = document.getElementById('ssh-key-path').value.trim();
-            if (!host || !user || !keyPath) {
+            const pass = document.getElementById('ssh-pass').value.trim();
+
+            let errors = [];
+            if (!host) errors.push("Host / IP del Servidor");
+            if (!user) errors.push("Usuario");
+            if (!port) errors.push("Puerto");
+            if (!keyPath && !pass) errors.push("Llave Privada o Contraseña (se requiere al menos una)");
+
+            if (errors.length > 0) {
                 vscode.postMessage({
                     type: 'showMessage',
-                    message: 'Por favor, rellene todos los campos obligatorios (*).',
+                    message: 'Faltan campos requeridos para la conexión SSH: \\n- ' + errors.join('\\n- '),
                     severity: 'warning'
                 });
                 return;
@@ -1086,6 +1045,21 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
         }
 
         function saveStep2() {
+            const url = document.getElementById('px-url').value.trim();
+            const tokenId = document.getElementById('px-token-id').value.trim();
+            const tokenVal = document.getElementById('px-token-val').value.trim();
+
+            // Si empieza a configurar alguno, debe configurar todos
+            if (url || tokenId || tokenVal) {
+                if (!url || !tokenId || !tokenVal) {
+                    vscode.postMessage({
+                        type: 'showMessage',
+                        message: 'Para configurar Proxmox, debes ingresar la URL, el Token ID y el Secret. De lo contrario, puedes hacer clic en "Omitir por ahora".',
+                        severity: 'warning'
+                    });
+                    return;
+                }
+            }
             saveSettings(true);
             showStep(3);
         }
@@ -1095,6 +1069,20 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
         }
 
         function saveStep3() {
+            const url = document.getElementById('coolify-url').value.trim();
+            const token = document.getElementById('coolify-token').value.trim();
+
+            // Si ingresa uno, debe ingresar ambos
+            if (url || token) {
+                if (!url || !token) {
+                    vscode.postMessage({
+                        type: 'showMessage',
+                        message: 'Para configurar Coolify, debes ingresar la URL y el Bearer Token. De lo contrario, puedes hacer clic en "Omitir por ahora".',
+                        severity: 'warning'
+                    });
+                    return;
+                }
+            }
             saveSettings(true);
             onboardingCompleted = true;
             showStep('dashboard');
@@ -1114,18 +1102,32 @@ class MCPSidebarProvider implements vscode.WebviewViewProvider {
             const text = document.getElementById('statusText');
             const startBtn = document.getElementById('startBtn');
             const stopBtn = document.getElementById('stopBtn');
+            const restartBtn = document.getElementById('restartBtn');
 
             container.className = 'status-container status-' + status;
             text.textContent = status;
 
-            if (status === 'Running') {
+            if (status === 'Running' || status === 'Attached') {
                 serverRunning = true;
-                startBtn.style.display = 'none';
-                stopBtn.style.display = 'block';
+                if (status === 'Attached') {
+                    text.textContent = "Attached (Copilot)";
+                    startBtn.disabled = true;
+                    stopBtn.disabled = true;
+                    restartBtn.disabled = true;
+                } else {
+                    startBtn.style.display = 'none';
+                    stopBtn.style.display = 'block';
+                    startBtn.disabled = false;
+                    stopBtn.disabled = false;
+                    restartBtn.disabled = false;
+                }
             } else {
                 serverRunning = false;
                 startBtn.style.display = 'block';
                 stopBtn.style.display = 'none';
+                startBtn.disabled = false;
+                stopBtn.disabled = false;
+                restartBtn.disabled = false;
             }
         }
 

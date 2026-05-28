@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -112,10 +113,28 @@ func (h *HandlerContext) handleSSHDiagnostic(ctx context.Context, request mcp.Ca
 	}
 
 	if args.User == "" {
-		args.User = "root"
+		args.User = os.Getenv("SSH_USER")
+		if args.User == "" {
+			args.User = "root"
+		}
 	}
 	if args.Port == 0 {
-		args.Port = 22
+		portStr := os.Getenv("SSH_PORT")
+		if portStr != "" {
+			fmt.Sscanf(portStr, "%d", &args.Port)
+		}
+		if args.Port == 0 {
+			args.Port = 22
+		}
+	}
+	if args.KeyPath == "" {
+		args.KeyPath = os.Getenv("SSH_KEY_PATH")
+	}
+	if args.Password == "" {
+		args.Password = os.Getenv("SSH_PASSWORD")
+		if args.Password == "" {
+			args.Password = os.Getenv("SSH_PASS")
+		}
 	}
 
 	config := ssh.SSHConfig{

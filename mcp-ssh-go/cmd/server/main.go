@@ -3,9 +3,14 @@ package main
 import (
 	"bufio"
 	"context"
+	"fmt"
+	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/mark3labs/mcp-go/server"
@@ -14,10 +19,53 @@ import (
 )
 
 func main() {
+	execPath, err := os.Executable()
+	var execDir string
+	if err == nil {
+		execDir = filepath.Dir(execPath)
+	} else {
+		execDir = "."
+	}
+
+	lockPath := filepath.Join(execDir, "mcp-server.lock")
+	if _, err := os.Stat(lockPath); err == nil {
+		data, err := os.ReadFile(lockPath)
+		if err == nil {
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err == nil && isProcessRunning(pid) {
+				// Another instance is running, exit immediately
+				os.Exit(0)
+			}
+		}
+	}
+
+	// Create or overwrite the lock file with current PID
+	os.WriteFile(lockPath, []byte(strconv.Itoa(os.Getpid())), 0666)
+	defer os.Remove(lockPath)
+
 	// Configure slog to write JSON to os.Stderr (vital for MCP to keep stdout clean)
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	var logPath string
+	if err == nil {
+		logPath = filepath.Join(execDir, "mcp-server-debug.log")
+	} else {
+		logPath = "mcp-server-debug.log"
+	}
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	var logWriter io.Writer = os.Stderr
+	if err == nil {
+		defer logFile.Close()
+		logWriter = io.MultiWriter(os.Stderr, logFile)
+	}
+
+	clientName := os.Getenv("MCP_CLIENT")
+	if clientName == "" {
+		clientName = "Unknown"
+	}
+
+	logger := slog.New(slog.NewJSONHandler(logWriter, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
-	}))
+	})).With("client", clientName)
 	slog.SetDefault(logger)
 
 	// Load environment variables from .env if present
@@ -88,4 +136,18 @@ func loadEnv() {
 		}
 		break // Stop once the first valid .env is loaded
 	}
+}
+
+func isProcessRunning(pid int) bool {
+	if runtime.GOOS == "windows" {
+		cmd := exec.Command("tasklist", "/FI", fmt.Sprintf("PID eq %d", pid))
+		output, err := cmd.Output()
+		if err == nil && strings.Contains(string(output), strconv.Itoa(pid)) {
+			return true
+		}
+		return false
+	}
+	// Linux/Unix check
+	_, err := os.Stat(fmt.Sprintf("/proc/%d", pid))
+	return err == nil
 }

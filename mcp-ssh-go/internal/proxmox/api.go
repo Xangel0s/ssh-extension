@@ -89,7 +89,7 @@ type NodeStatusData struct {
 		Total int64 `json:"total"`
 		Used  int64 `json:"used"`
 	} `json:"swap"`
-	LoadAvg []float64 `json:"loadavg"`
+	LoadAvg []interface{} `json:"loadavg"`
 }
 
 type NodeStatusResponse struct {
